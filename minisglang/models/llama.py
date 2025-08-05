@@ -53,6 +53,7 @@ class LlamaAttention(nn.Module):
     def __init__(
         self,
         config: LlamaConfig,
+        layer_id: int,
         hidden_size: int,
         num_heads: int,
         num_kv_heads: int,
@@ -62,6 +63,7 @@ class LlamaAttention(nn.Module):
         bias: bool = False,
     ) -> None:
         super().__init__()
+        self.layer_id = layer_id
         tp_size = get_tensor_model_parallel_world_size()
         self.total_num_heads = num_heads
         assert self.total_num_heads % tp_size == 0
@@ -103,7 +105,7 @@ class LlamaAttention(nn.Module):
             base=self.rope_theta,
         )
         self.attn = Attention(
-            self.num_heads, self.num_kv_heads, self.head_dim, self.scaling
+            self.layer_id, self.num_heads, self.num_kv_heads, self.head_dim, self.scaling
         )
 
     def forward(
@@ -124,6 +126,7 @@ class LlamaDecoderLayer(nn.Module):
     def __init__(
         self,
         config: LlamaConfig,
+        layer_id: int,
     ) -> None:
         super().__init__()
         self.hidden_size = config.hidden_size
@@ -141,6 +144,7 @@ class LlamaDecoderLayer(nn.Module):
         )
         self.self_attn = LlamaAttention(
             config=config,
+            layer_id=layer_id,
             hidden_size=self.hidden_size,
             num_heads=config.num_attention_heads,
             num_kv_heads=config.num_key_value_heads,
@@ -200,7 +204,7 @@ class LlamaModel(nn.Module):
             config.hidden_size,
         )
         self.layers = nn.ModuleList([
-            LlamaDecoderLayer(config) for _ in range(config.num_hidden_layers)
+            LlamaDecoderLayer(config, layer_id=i) for i in range(config.num_hidden_layers)
         ])
         self.norm = RMSNorm(
             config.hidden_size,
