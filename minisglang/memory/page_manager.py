@@ -21,19 +21,32 @@ class PageManager:
         )
         self.free_slots = [i for i in range(max_req_num)]
 
-
     def translate_token(self, req_id: int, token_id: int):
         vpn, offset = token_id // self.page_size, token_id % self.page_size
         return self.page_table[req_id, vpn] + offset
-    
+
     def allocate(self, num_reqs: int) -> List[int]:
-        """ allocate req ids in the page table"""
+        """allocate req ids in the page table"""
         assert num_reqs <= len(self.free_slots)
         allocated = self.free_slots[:num_reqs]
         self.free_slots = self.free_slots[num_reqs:]
         return allocated
-    
+
     def free(self, page_table_ids: List[int]):
-        """ free req ids in the page table"""
+        """free req ids in the page table"""
         self.free_slots.extend(page_table_ids)
-        
+
+    def write_ppns_prefill(self, page_table_id: int, ppns: List[int]):
+        self.page_table[page_table_id, : len(ppns)] = torch.tensor(
+            ppns, device=self.page_table.device, dtype=torch.int32
+        )
+
+    def write_ppns_decode(
+        self,
+        page_table_ids: List[int],
+        vpns_list: List[List[int]],
+        ppns_list: List[List[int]],
+    ):
+        for page_table_id, vpns, ppns in zip(page_table_ids, vpns_list, ppns_list):
+            for vpn, ppn in zip(vpns, ppns):
+                self.page_table[page_table_id, vpn] = ppn

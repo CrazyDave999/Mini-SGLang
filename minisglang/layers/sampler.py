@@ -1,3 +1,4 @@
+from typing import List
 import torch
 from torch import nn
 
@@ -5,7 +6,9 @@ from dataclasses import dataclass
 
 @dataclass
 class SamplingParams:
-    temperature: float
+    max_new_tokens: int = 128
+    stop_token_ids: List[int] = None
+    temperature: float = 1.0
 
 class Sampler(nn.Module):
 
