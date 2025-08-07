@@ -1,5 +1,5 @@
-from transformers import AutoConfig
-
+from transformers import AutoConfig, PretrainedConfig
+import torch
 
 class ModelConfig:
     def __init__(
@@ -8,7 +8,7 @@ class ModelConfig:
     ) -> None:
         self.model_path = model_path
         self.hf_config = AutoConfig.from_pretrained(model_path)
-        self.hf_text_config = self.get_hf_text_config(self.hf_config)
+        self.hf_text_config = get_hf_text_config(self.hf_config)
 
         self.context_len = get_context_length(self.hf_text_config)
 
@@ -17,6 +17,9 @@ class ModelConfig:
             "head_dim",
             self.hf_text_config.hidden_size // self.hf_text_config.num_attention_heads,
         )
+        self.num_key_value_heads = getattr(
+            self.hf_text_config, "num_key_value_heads", None
+        )
         
         if self.num_key_value_heads is None:
             self.num_key_value_heads = self.hf_text_config.num_attention_heads
@@ -24,6 +27,7 @@ class ModelConfig:
         self.hidden_size = self.hf_text_config.hidden_size
         self.num_hidden_layers = self.hf_text_config.num_hidden_layers
         self.vocab_size = self.hf_text_config.vocab_size
+        self.dtype = torch.float16
 
         
 

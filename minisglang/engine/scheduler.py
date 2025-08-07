@@ -7,6 +7,8 @@ from minisglang.utils.ipc import get_zmq_socket
 from minisglang.engine.batch import Batch, Req
 from dataclasses import dataclass
 
+from minisglang.utils.args import ServerArgs
+
 
 @dataclass
 class GenerationBatchResult:
@@ -28,14 +30,19 @@ class Scheduler:
 
     def __init__(
         self,
+        server_args: ServerArgs,
         model_path: str,
         tp_rank: int,
-        max_running_requests: int,
     ):
 
         self.tp_rank = tp_rank
         self.max_running_requests = max_running_requests
-        self.model_runner = ModelRunner(model_path, tp_rank)
+        self.model_runner = ModelRunner(
+            server_args=server_args,
+            model_path=model_path,
+            tp_rank=tp_rank,
+            device="cuda",
+        )
 
         context = zmq.Context(2)
         if tp_rank == 0:

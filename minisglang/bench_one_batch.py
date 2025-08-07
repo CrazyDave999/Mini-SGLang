@@ -133,6 +133,7 @@ def load_model(server_args, tp_rank):
         server_args.model_path,
     )
     model_runner = ModelRunner(
+        server_args=server_args,
         model_path=server_args.model_path,
         tp_rank=tp_rank,
         device=server_args.device,
@@ -222,7 +223,6 @@ def correctness_test(
     tp_rank,
 ):
     # Configure the logger
-    configure_logger(server_args, prefix=f" TP{tp_rank}")
     rank_print = print if tp_rank == 0 else lambda *args, **kwargs: None
 
     # Load the model
@@ -264,10 +264,6 @@ def synchronize(device):
     torch.get_device_module(device).synchronize()
 
 def main(server_args, bench_args):
-    server_args.cuda_graph_max_bs = max(bench_args.batch_size)
-
-    _set_envs_and_config(server_args)
-
     if server_args.model_path:
         work_func = correctness_test
     else:
@@ -307,10 +303,10 @@ if __name__ == "__main__":
     server_args = ServerArgs.from_cli_args(args)
     bench_args = BenchArgs.from_cli_args(args)
 
-    logging.basicConfig(
-        level=getattr(logging, server_args.log_level.upper()),
-        format="%(message)s",
-    )
+    # logging.basicConfig(
+    #     level=getattr(logging, server_args.log_level.upper()),
+    #     format="%(message)s",
+    # )
 
     try:
         main(server_args, bench_args)

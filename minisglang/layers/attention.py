@@ -1,4 +1,3 @@
-from abc import ABC, abstractmethod
 from minisglang.engine.batch import Batch
 import torch
 import torch.nn as nn
@@ -7,7 +6,6 @@ from sgl_kernel.flash_attn import flash_attn_varlen_func, flash_attn_with_kvcach
 
 from dataclasses import dataclass
 
-from minisglang.engine.model_runner import ModelRunner
 
 
 @dataclass
@@ -33,16 +31,16 @@ class FlashAttentionMetaData:
 
 
 class FlashAttentionBackend:
-    def __init__(self, model_runner: ModelRunner):
+    def __init__(self, model_runner):
         self.forward_metadata: FlashAttentionMetaData = None
         self.max_context_len = model_runner.model_config.context_len
         self.device = model_runner.device
-        self.page_table = model_runner.page_table
+        self.page_manager = model_runner.page_manager
         self.page_size = model_runner.page_size
 
     def init_forward_metadata(self, batch: Batch):
         metadata = FlashAttentionMetaData()
-        seqlens_in_batch = forward_batch.seq_lens
+        seqlens_in_batch = batch.seq_lens
         batch_size = len(seqlens_in_batch)
         device = batch.device
         if batch.mode.is_decode():
@@ -84,8 +82,7 @@ class FlashAttentionBackend:
         if k is not None:
             assert v is not None
             # write the newly calculated kv to the kv cache
-            cache_loc = batch.out_cache_loc
-            batch.kvcache.write_kv(layer_id, cache_loc, k, v)
+            batch.kvcache.write_kv(layer_id, batch.out_cache_loc, k, v)
             
         window_size = (-1, -1)
         
@@ -129,7 +126,7 @@ class Attention(nn.Module):
         scale: float = 1.0,
     ):
         super().__init__()
-        layer_id = layer_id
+        self.layer_id = layer_id
         self.num_heads = num_heads
         self.num_kv_heads = num_kv_heads
         self.head_dim = head_dim
@@ -147,6 +144,6 @@ class Attention(nn.Module):
             q=q,
             k=k,
             v=v,
-            layer_id=batch.layer_id,
+            layer_id=self.layer_id,
             batch=batch,
         )

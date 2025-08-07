@@ -1,14 +1,25 @@
+
+import argparse
+import dataclasses
+
 from dataclasses import dataclass
+from typing import List, Optional
 
 @dataclass
 class ServerArgs:
     model_path: str = None
     tokenizer_path: str = None
     device: str = None
+    
+    # Memory and scheduling
+    max_running_requests: int = 8
+    max_total_tokens: int = 1024 * 1024
     page_size: int = 1
     
     tp_size: int = 1
     stream_output: bool = False
+    
+    
     
     @staticmethod
     def add_cli_args(parser: argparse.ArgumentParser):
@@ -29,6 +40,20 @@ class ServerArgs:
             type=str,
             default=ServerArgs.device,
             help="The device to use ('cuda', 'xpu', 'hpu', 'cpu'). Defaults to auto-detection if not specified.",
+        )
+        
+        parser.add_argument(
+            "--max-running-requests",
+            type=int,
+            default=ServerArgs.max_running_requests,
+            help="The maximum number of running requests.",
+        )
+        parser.add_argument(
+            "--max-total-tokens",
+            type=int,
+            default=ServerArgs.max_total_tokens,
+            help="The maximum number of tokens in the memory pool. If not specified, it will be automatically calculated based on the memory usage fraction. "
+            "This option is typically used for development and debugging purposes.",
         )
         parser.add_argument(
             "--page-size",

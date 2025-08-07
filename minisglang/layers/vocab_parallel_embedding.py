@@ -2,6 +2,7 @@ import torch
 from torch import nn
 from typing import Optional, Tuple, Dict, Any
 import torch.distributed as dist
+from torch.nn import functional as F
 
 class VocabParallelEmbedding(nn.Module):
     def __init__(
@@ -10,8 +11,10 @@ class VocabParallelEmbedding(nn.Module):
         embedding_dim: int,
     ):
         super().__init__()
-        self.tp_rank = dist.get_rank() 
-        self.tp_size = dist.get_world_size()
+        # self.tp_rank = dist.get_rank() 
+        # self.tp_size = dist.get_world_size()
+        self.tp_rank = 0
+        self.tp_size = 1
         self.num_embeddings = num_embeddings
         assert num_embeddings % self.tp_size == 0
         self.num_embeddings_per_partition = num_embeddings // self.tp_size

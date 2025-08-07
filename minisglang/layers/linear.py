@@ -4,6 +4,7 @@ import torch.nn.functional as F
 from minisglang.utils import divide
 import torch.distributed as dist
 from torch.nn.parameter import Parameter
+from typing import Optional, List
 
 
 class LinearBase(nn.Module):
@@ -17,6 +18,7 @@ class LinearBase(nn.Module):
         self.input_size = input_size
         self.output_size = output_size
         self.params_dtype = params_dtype
+        self.output_dim = 0
 
     def forward(
         self,
@@ -42,11 +44,20 @@ class ColumnParallelLinear(LinearBase):
             output_size=output_size,
             params_dtype=params_dtype,
         )
+
+        if tp_rank is None:
+            tp_rank = 0
+        if tp_size is None:
+            tp_size = 1
         self.tp_rank = tp_rank
         self.tp_size = tp_size
 
         self.output_size_per_partition = divide(output_size, tp_size)
-        # self.output_partition_sizes = [self.output_size_per_partition]
+
+        self.weight = nn.Parameter(
+            torch.empty(self.output_size_per_partition, self.input_size)
+        )
+        self.weight.weight_loader = self.weight_loader
 
         if bias:
             raise NotImplementedError("Bias is not supported in ColumnParallelLinear")
@@ -57,7 +68,7 @@ class ColumnParallelLinear(LinearBase):
         return F.linear(x, self.weight, self.bias)
 
     def weight_loader(self, param: Parameter, loaded_weight: torch.Tensor):
-        output_dim = getattr(param, "output_dim", None)
+        output_dim = self.output_dim
 
         param_data = param.data
 
@@ -96,7 +107,7 @@ class MergedColumnParallelLinear(ColumnParallelLinear):
         loaded_weight: torch.Tensor,
         loaded_shard_id: Optional[int] = None,
     ):
-        output_dim = getattr(param, "output_dim", None)
+        output_dim = self.output_dim
         param_data = param.data
         shard_offset = sum(self.output_sizes[:loaded_shard_id]) // self.tp_size
         shard_size = self.output_sizes[loaded_shard_id] // self.tp_size
@@ -124,6 +135,10 @@ class QKVParallelLinear(ColumnParallelLinear):
             total_num_kv_heads if total_num_kv_heads is not None else total_num_heads
         )
         # Divide the weight matrix along the last dimension.
+        if tp_rank is None:
+            tp_rank = 0
+        if tp_size is None:
+            tp_size = 1
         self.tp_rank = tp_rank
         self.tp_size = tp_size
         self.num_heads = divide(total_num_heads, tp_size)
@@ -155,7 +170,7 @@ class QKVParallelLinear(ColumnParallelLinear):
     def weight_loader(
         self, param: nn.Parameter, loaded_weight: torch.Tensor, loaded_shard_id: str
     ):
-        output_dim = getattr(param, "output_dim", None)
+        output_dim = self.output_dim
         param_data = param.data
         assert loaded_shard_id in ["q", "k", "v"]
         if loaded_shard_id == "q":
@@ -189,8 +204,20 @@ class RowParallelLinear(LinearBase):
             output_size=output_size,
             params_dtype=params_dtype,
         )
+        if tp_rank is None:
+            tp_rank = 0
+        if tp_size is None:
+            tp_size = 1
+
         self.tp_rank = tp_rank
         self.tp_size = tp_size
+        self.input_size_per_partition = divide(input_size, tp_size)
+        self.weight = nn.Parameter(
+            torch.empty(self.output_size, self.input_size_per_partition)
+        )
+        self.weight
+        self.weight.weight_loader = self.weight_loader
+
         if bias:
             self.bias = nn.Parameter(torch.empty(self.output_size))
             self.bias.weight_loader = self.weight_loader
@@ -204,8 +231,8 @@ class RowParallelLinear(LinearBase):
         return y
 
     def weight_loader(self, param: Parameter, loaded_weight: torch.Tensor):
-        output_dim = getattr(param, "output_dim", None)
-        
+        output_dim = self.output_dim
+
         param_data = param.data
         shard_size = param_data.size(output_dim)
         start_idx = self.tp_rank * shard_size

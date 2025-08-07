@@ -64,7 +64,7 @@ class LlamaAttention(nn.Module):
     ) -> None:
         super().__init__()
         self.layer_id = layer_id
-        tp_size = get_tensor_model_parallel_world_size()
+        tp_size = 1
         self.total_num_heads = num_heads
         assert self.total_num_heads % tp_size == 0
         self.num_heads = self.total_num_heads // tp_size
@@ -206,6 +206,7 @@ class LlamaModel(nn.Module):
         self.embed_tokens = VocabParallelEmbedding(
             config.vocab_size,
             config.hidden_size,
+            
         )
         self.layers = nn.ModuleList(
             [

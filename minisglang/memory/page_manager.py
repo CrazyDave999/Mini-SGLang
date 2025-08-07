@@ -1,3 +1,6 @@
+import torch
+from typing import List
+
 from minisglang.engine.batch import Req, Batch
 
 
