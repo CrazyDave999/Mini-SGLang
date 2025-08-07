@@ -105,7 +105,11 @@ class LlamaAttention(nn.Module):
             base=self.rope_theta,
         )
         self.attn = Attention(
-            self.layer_id, self.num_heads, self.num_kv_heads, self.head_dim, self.scaling
+            self.layer_id,
+            self.num_heads,
+            self.num_kv_heads,
+            self.head_dim,
+            self.scaling,
         )
 
     def forward(
@@ -184,12 +188,12 @@ class LlamaDecoderLayer(nn.Module):
             hidden_states=hidden_states,
             batch=batch,
         )
-        
+
         hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
         hidden_states = self.mlp(hidden_states)
         return hidden_states, residual
-    
-    
+
+
 class LlamaModel(nn.Module):
     def __init__(
         self,
@@ -203,14 +207,17 @@ class LlamaModel(nn.Module):
             config.vocab_size,
             config.hidden_size,
         )
-        self.layers = nn.ModuleList([
-            LlamaDecoderLayer(config, layer_id=i) for i in range(config.num_hidden_layers)
-        ])
+        self.layers = nn.ModuleList(
+            [
+                LlamaDecoderLayer(config, layer_id=i)
+                for i in range(config.num_hidden_layers)
+            ]
+        )
         self.norm = RMSNorm(
             config.hidden_size,
             eps=config.rms_norm_eps,
         )
-        
+
     def forward(
         self,
         input_ids: torch.Tensor,
@@ -219,34 +226,24 @@ class LlamaModel(nn.Module):
     ) -> torch.Tensor:
         hidden_states = self.embed_tokens(input_ids)
         residual = None
-        
+
         for layer in self.layers:
             hidden_states, residual = layer(positions, hidden_states, batch, residual)
-            
+
         hidden_states, _ = self.norm(hidden_states, residual)
         return hidden_states
-        
+
+
 class LlamaForCausalLM(nn.Module):
-    # BitandBytes specific attributes
-    default_bitsandbytes_target_modules = [
-        ".gate_proj.",
-        ".down_proj.",
-        ".up_proj.",
-        ".q_proj.",
-        ".k_proj.",
-        ".v_proj.",
-        ".o_proj.",
-    ]
-    # in TP, these weights are partitioned along the column dimension (dim=-1)
-    column_parallel_weights_modules = [".down_proj.", ".o_proj."]
-    bitsandbytes_stacked_params_mapping = {
-        # shard_name, weight_name, index
-        ".q_proj": (".qkv_proj", 0),
-        ".k_proj": (".qkv_proj", 1),
-        ".v_proj": (".qkv_proj", 2),
-        ".gate_proj": (".gate_up_proj", 0),
-        ".up_proj": (".gate_up_proj", 1),
+    packed_modules_mapping = {
+        "q_proj": ("qkv_proj", "q"),
+        "k_proj": ("qkv_proj", "k"),
+        "v_proj": ("qkv_proj", "v"),
+        "gate_proj": ("gate_up_proj", 0),
+        "up_proj": ("gate_up_proj", 1),
     }
+
+
     def __init__(
         self,
         config: LlamaConfig,
@@ -254,7 +251,7 @@ class LlamaForCausalLM(nn.Module):
         super().__init__()
         self.config = config
         self.model = self._init_model(config)
-        
+
         if self.config.tie_word_embeddings:
             self.lm_head = self.model.embed_tokens
         else:
@@ -263,13 +260,13 @@ class LlamaForCausalLM(nn.Module):
                 embedding_dim=config.hidden_size,
                 bias=False,
             )
-        
+
     def _init_model(
         self,
         config: LlamaConfig,
     ) -> LlamaModel:
         return LlamaModel(config)
-    
+
     @torch.no_grad()
     def forward(
         self,
@@ -280,3 +277,7 @@ class LlamaForCausalLM(nn.Module):
         hidden_states = self.model(input_ids, positions, batch)
         logits = self.lm_head(hidden_states)
         return logits
+
+    # def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]):
+        
+        

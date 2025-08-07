@@ -17,15 +17,26 @@ class Mode(Enum):
 
 
 class Req:
-    def __init__(self, mode: Mode):
-        self.rid = None
-        self.mode = mode
-        self.fill_ids = None
+    def __init__(
+        self,
+        rid: int,
+        origin_input_ids: List[int],
+        sampling_params: SamplingParams,
+    ):
+
+        self.rid = rid
+        self.origin_input_ids = origin_input_ids
         self.output_ids = []
+        self.fill_ids = None
         self.prefix_ppns = []
         self.page_table_id = None
+
+        self.sampling_params: SamplingParams = sampling_params
+        
         self.finished_reason = None
-        self.sampling_params: SamplingParams = None
+        
+        self.prefix_ppns = []
+        
         
     def finished(self):
         return self.finished_reason is not None
@@ -55,7 +66,7 @@ class Req:
 class Batch:
     bid: int
     reqs: List[Req]
-    page_manager: PageManager
+    page_manager: PageManager = None
     kvcache: KVCache = None
 
     page_table_ids: List[int] = None
@@ -67,16 +78,18 @@ class Batch:
     input_ids: torch.Tensor = None
 
     output_ids: torch.Tensor = None
+    device: str = "cuda"
 
     def __init__(
         self,
         reqs: List[Req],
-        page_table: PageManager = None,
+        page_manager: PageManager = None,
         kvcache: KVCache = None,
     ):
         self.reqs = reqs
-        self.page_table = page_table
+        self.page_manager = page_manager
         self.kvcache = kvcache
+        self.device = self.kvcache.device
         
     def is_empty(self):
         return len(self.reqs) == 0
@@ -86,38 +99,6 @@ class Batch:
         assert page_table_ids is not None, "No free slots in page table"
         return page_table_ids
 
-    # def alloc_token_slots_prefill(
-    #     self,
-    #     seq_lens: torch.Tensor,
-    #     prefix_lens: torch.Tensor,
-    #     last_page_ids: torch.Tensor,
-    #     extend_num_tokens: int,
-    # ) -> torch.Tensor:
-    #     # TODO evict when no available pages
-
-    #     out_cache_loc = self.kvcache.allocate_prefill(
-    #         seq_lens, prefix_lens, last_page_ids, extend_num_tokens
-    #     )
-    #     assert out_cache_loc is not None, "allocate token slots failed"
-    #     return out_cache_loc
-
-    def alloc_pages_prefill(
-        self, seq_lens: List[int], prefix_lens: List[int]
-    ) -> List[List[int]]:
-        # TODO evict when no available pages
-
-        new_pages = self.kvcache.allocate_pages_prefill(seqlens, prefix_lens)
-        assert new_pages is not None, "allocate token slots failed"
-        return new_pages
-
-    # def alloc_token_slots_decode(
-    #     self,
-    #     seq_lens: torch.Tensor,
-    #     last_page_ids: torch.Tensor,
-    # ) -> torch.Tensor:
-    #     out_cache_loc = self.kvcache.allocate_decode(seq_lens, last_page_ids)
-    #     assert out_cache_loc is not None, "allocate token slots failed"
-    #     return out_cache_loc
 
     def prepare_for_prefill(self):
         self.mode = Mode.PREFILL
@@ -149,7 +130,7 @@ class Batch:
         # ).to(self.device, non_blocking=True)
 
         # allocate pages for newly added tokens
-        new_pages_list = self.alloc_pages_prefill(seq_lens, prefix_lens)
+        new_pages_list = self.kvcache.allocate_pages_prefill(seq_lens, prefix_lens)
 
         for i, (req, new_pages) in enumerate(zip(reqs, new_pages_list)):
             # set page_table_id
@@ -174,6 +155,7 @@ class Batch:
         self.page_manager.write_ppns_decode(self.page_table_ids, vpns_list, ppns_list)
 
     def filter_batch(self):
+        """ filter out finished requests """
         keep_indices = [
             i for i in range(len(self.reqs)) if not self.reqs[i].finished()
         ]
