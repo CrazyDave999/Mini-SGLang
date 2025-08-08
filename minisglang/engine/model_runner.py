@@ -59,6 +59,7 @@ class ModelRunner:
         self.sampler = Sampler()
         self.device = device
         self.page_size = server_args.page_size
+        torch.set_default_device("cuda")
 
         # init memory
         self.page_manager = PageManager(

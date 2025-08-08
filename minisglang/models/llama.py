@@ -10,7 +10,7 @@ from minisglang.layers.linear import (
     QKVParallelLinear,
     RowParallelLinear,
 )
-from minisglang.layers.rotary_embedding import RotaryEmbedding
+from minisglang.layers.rotary_embedding import get_rope
 from minisglang.layers.layernorm import RMSNorm
 from minisglang.layers.vocab_parallel_embedding import (
     VocabParallelEmbedding,
@@ -98,11 +98,12 @@ class LlamaAttention(nn.Module):
             hidden_size,
             bias=bias,
         )
-        self.rotary_emb = RotaryEmbedding(
-            self.head_dim,
-            self.rotary_dim,
-            self.max_position_embeddings,
+        self.rotary_emb = get_rope(
+            head_size=self.head_dim,
+            rotary_dim=self.rotary_dim,
+            max_position=self.max_position_embeddings,
             base=self.rope_theta,
+            rope_scaling=rope_scaling
         )
         self.attn = Attention(
             self.layer_id,
