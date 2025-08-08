@@ -5,15 +5,19 @@ from minisglang.utils.model_config import ModelConfig
 from minisglang.layers.sampler import Sampler
 from minisglang.memory.kvcache import KVCache
 from minisglang.memory.page_manager import PageManager
-from minisglang.layers.attention import FlashAttentionBackend
+from minisglang.layers.attention_backends.torch_native_backend import (
+    TorchNativeAttnBackend,
+)
 from minisglang.models.llama import LlamaForCausalLM
 from minisglang.utils.args import ServerArgs
 import os
 from glob import glob
 from safetensors import safe_open
 
+
 def default_weight_loader(param: nn.Parameter, loaded_weight: torch.Tensor):
     param.data.copy_(loaded_weight)
+
 
 def get_model(
     model_config: ModelConfig,
@@ -34,7 +38,9 @@ def get_model(
                         break
                 else:
                     param = model.get_parameter(weight_name)
-                    weight_loader = getattr(param, "weight_loader", default_weight_loader)
+                    weight_loader = getattr(
+                        param, "weight_loader", default_weight_loader
+                    )
                     weight_loader(param, f.get_tensor(weight_name))
     return model
 
@@ -53,13 +59,13 @@ class ModelRunner:
         self.sampler = Sampler()
         self.device = device
         self.page_size = server_args.page_size
-        
+
         # init memory
         self.page_manager = PageManager(
             page_size=server_args.page_size,
             max_req_num=server_args.max_running_requests,
             max_page_num=server_args.max_total_tokens // server_args.page_size,
-            device=device
+            device=device,
         )
         self.kvcache = KVCache(
             page_num=self.page_manager.max_page_num,
@@ -71,7 +77,7 @@ class ModelRunner:
             device=device,
         )
 
-        self.attn_backend = FlashAttentionBackend(self)
+        self.attn_backend = TorchNativeAttnBackend(self)
 
     def forward(
         self,
@@ -82,8 +88,7 @@ class ModelRunner:
         batch.attn_backend = self.attn_backend
         logits_output = self.model.forward(batch.input_ids, batch.positions, batch)
 
-        next_token_ids = self.sampler(
-            logits=logits_output, temperatures=batch.temperatures
-        )
+        temperatures = torch.tensor([1.0] * len(batch.seq_lens), device=self.device)
+        next_token_ids = self.sampler(logits=logits_output, temperatures=temperatures)
 
         return logits_output, next_token_ids

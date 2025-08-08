@@ -43,9 +43,9 @@ class LlamaMLP(nn.Module):
         self.act_fn = SiluAndMul()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        gate_up, _ = self.gate_up_proj(x)
+        gate_up = self.gate_up_proj(x)
         x = self.act_fn(gate_up)
-        x, _ = self.down_proj(x)
+        x = self.down_proj(x)
         return x
 
 
@@ -122,7 +122,7 @@ class LlamaAttention(nn.Module):
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
         q, k = self.rotary_emb(positions, q, k)
         attn_output = self.attn(q, k, v, batch)
-        output, _ = self.o_proj(attn_output)
+        output = self.o_proj(attn_output)
         return output
 
 
@@ -253,14 +253,12 @@ class LlamaForCausalLM(nn.Module):
         self.config = config
         self.model = self._init_model(config)
 
-        if self.config.tie_word_embeddings:
-            self.lm_head = self.model.embed_tokens
-        else:
-            self.lm_head = ParallelLMHead(
-                num_embeddings=config.vocab_size,
-                embedding_dim=config.hidden_size,
-                bias=False,
-            )
+        
+        self.lm_head = ParallelLMHead(
+            num_embeddings=config.vocab_size,
+            embedding_dim=config.hidden_size,
+            bias=False,
+        )
 
     def _init_model(
         self,
@@ -276,7 +274,7 @@ class LlamaForCausalLM(nn.Module):
         batch: Batch,
     ) -> torch.Tensor:
         hidden_states = self.model(input_ids, positions, batch)
-        logits = self.lm_head(hidden_states)
+        logits = self.lm_head(hidden_states, batch)
         return logits
 
     # def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]):

@@ -73,7 +73,7 @@ class KVCache:
         cache_k: torch.Tensor,
         cache_v: torch.Tensor,
     ):
-        print(f"k shape: {cache_k.shape}, v shape: {cache_v.shape}")
+        # print(f"k shape: {cache_k.shape}, v shape: {cache_v.shape}")
         self.k_cache[layer_id][loc] = cache_k
         self.v_cache[layer_id][loc] = cache_v
 

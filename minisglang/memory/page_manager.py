@@ -39,17 +39,13 @@ class PageManager:
         """free req ids in the page table"""
         self.free_slots.extend(page_table_ids)
 
-    def write_ppns_prefill(self, page_table_id: int, ppns: List[int]):
-        self.page_table[page_table_id, : len(ppns)] = torch.tensor(
-            ppns, device=self.page_table.device, dtype=torch.int32
-        )
+    def write_ppns_prefill(self, page_table_id: int, ppns: torch.Tensor):
+        self.page_table[page_table_id, : ppns.size(0)] = ppns
 
     def write_ppns_decode(
         self,
-        page_table_ids: List[int],
-        vpns_list: List[List[int]],
-        ppns_list: List[List[int]],
+        page_table_id: int,
+        vpns: torch.Tensor,
+        ppns: torch.Tensor
     ):
-        for page_table_id, vpns, ppns in zip(page_table_ids, vpns_list, ppns_list):
-            for vpn, ppn in zip(vpns, ppns):
-                self.page_table[page_table_id, vpn] = ppn
+        self.page_table[page_table_id, vpns] = ppns

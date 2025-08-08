@@ -184,7 +184,7 @@ def prepare_extend_inputs_for_correctness_test(
         # get the prefix ppn
         req.prefix_ppns = model_runner.page_manager.page_table[
             i, : bench_args.cut_len // model_runner.page_manager.page_size
-        ]
+        ].tolist()
         
     return reqs
 
@@ -212,7 +212,7 @@ def decode(input_token_ids, batch: Batch, model_runner: ModelRunner):
 
 
     logits_output, next_token_ids = model_runner.forward(batch)
-    return next_token_ids, logits_output, batch
+    return next_token_ids, logits_output
 
 
 

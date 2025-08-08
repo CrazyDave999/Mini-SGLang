@@ -37,8 +37,6 @@ class Req:
 
         self.finished_reason = None
 
-        self.prefix_ppns = []
-
     def finished(self):
         return self.finished_reason is not None
 
@@ -81,7 +79,7 @@ class Batch:
 
     out_cache_loc: torch.Tensor = None
     positions: torch.Tensor = None
-    
+
     attn_backend = None
 
     def __init__(
@@ -110,7 +108,9 @@ class Batch:
         page_table_ids = self.alloc_req_slots(batch_size)
 
         reqs = self.reqs
-        input_ids = [r.fill_ids[len(r.prefix_ppns) * self.page_manager.page_size :] for r in reqs]
+        input_ids = [
+            r.fill_ids[len(r.prefix_ppns) * self.page_manager.page_size :] for r in reqs
+        ]
         extend_num_tokens = sum(len(ids) for ids in input_ids)
         seq_lens = [len(r.fill_ids) for r in reqs]
         prefix_lens = [len(r.prefix_ppns) * self.page_manager.page_size for r in reqs]
@@ -130,38 +130,52 @@ class Batch:
             prefix_lens,
             dtype=torch.int64,
         ).to(self.device, non_blocking=True)
-        
 
         # allocate pages for newly added tokens
-        new_pages_list = self.kvcache.allocate_pages_prefill(seq_lens, prefix_lens)
+        new_pages_list: List[List[int]] = self.kvcache.allocate_pages_prefill(
+            seq_lens, prefix_lens
+        )
 
         for i, (req, new_pages) in enumerate(zip(reqs, new_pages_list)):
             # set page_table_id
             req.page_table_id = page_table_ids[i]
+
+            new_pages = torch.tensor(
+                new_pages,
+                device=self.device,
+            )
             # write ppns to page table (prefix & newly allocated pages)
-            ppns = req.prefix_ppns + new_pages
+            prefix_ppns = torch.tensor(
+                req.prefix_ppns,
+                device=self.device,
+            )
+            ppns = torch.cat((prefix_ppns, new_pages))
             self.page_manager.write_ppns_prefill(req.page_table_id, ppns)
-            
+
         # set fields
         self.input_ids = input_ids_tensor
         self.page_table_ids = page_table_ids_tensor
         self.seq_lens = seq_lens_tensor
         self.prefix_lens = prefix_lens_tensor
         self.positions = torch.cat(
-            [torch.arange(pl, sl, dtype=torch.int64) for pl, sl in zip(prefix_lens, seq_lens)]
+            [
+                torch.arange(pl, sl, dtype=torch.int64)
+                for pl, sl in zip(prefix_lens, seq_lens)
+            ]
         )
-        
+
         page_table_id_mask = torch.cat(
-            [torch.tensor([req_id] * (sl - pl), dtype=torch.int64) for req_id, pl, sl in zip(page_table_ids, prefix_lens, seq_lens)]
+            [
+                torch.tensor([req_id] * (sl - pl), dtype=torch.int64)
+                for req_id, pl, sl in zip(page_table_ids, prefix_lens, seq_lens)
+            ]
         )
-        
+
         # out_cache_loc is obtained by indexing the page table with positions
-        
+
         self.out_cache_loc = self.page_manager.page_table[
             page_table_id_mask, self.positions // self.page_manager.page_size
         ] + (self.positions % self.page_manager.page_size)
-            
-            
 
     def prepare_for_decode(self):
         self.mode = Mode.DECODE
@@ -171,16 +185,18 @@ class Batch:
         self.output_ids = None
         self.seq_lens = self.seq_lens + 1
 
-
         ppns_list: List[List[int]] = self.kvcache.allocate_pages_decode(self.seq_lens)
-        last_vpn_list: List[int] = self.seq_lens // self.page_manager.page_size
-        vpns_list: List[List[int]] = [
-            [last_vpn_list[i]] if ppns_list[i] else [] for i in range(len(ppns_list))
-        ]
-        self.page_manager.write_ppns_decode(self.page_table_ids, vpns_list, ppns_list)
+        last_vpns = self.seq_lens // self.page_manager.page_size
+
+        for i, (req, ppns) in enumerate(zip(self.reqs, ppns_list)):
+            if len(ppns) > 0:
+                ppns = torch.tensor(ppns, device=self.device, dtype=torch.int32)
+                vpns = torch.tensor([last_vpns[i]], device=self.device, dtype=torch.int32)
+                self.page_manager.write_ppns_decode(req.page_table_id, vpns, ppns)
+
         self.positions = self.seq_lens - 1
         page_table_id_mask = self.page_table_ids
-        
+
         self.out_cache_loc = self.page_manager.page_table[
             page_table_id_mask, self.positions // self.page_manager.page_size
         ] + (self.positions % self.page_manager.page_size)

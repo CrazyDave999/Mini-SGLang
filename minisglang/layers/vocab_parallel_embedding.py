@@ -3,6 +3,7 @@ from torch import nn
 from typing import Optional, Tuple, Dict, Any
 import torch.distributed as dist
 from torch.nn import functional as F
+from minisglang.engine.batch import Batch
 
 class VocabParallelEmbedding(nn.Module):
     def __init__(
@@ -54,3 +55,10 @@ class ParallelLMHead(VocabParallelEmbedding):
             self.bias.weight_loader = self.weight_loader
         else:
             self.register_parameter("bias", None)
+            
+    def forward(self, x: torch.Tensor, batch: Batch):
+        if batch.mode.is_prefill():
+            last_indices = batch.seq_lens - 1
+            x = x[last_indices].contiguous()
+        logits = F.linear(x, self.weight)
+        return logits

@@ -1,6 +1,12 @@
 from transformers import AutoConfig, PretrainedConfig
 import torch
-
+_STR_DTYPE_TO_TORCH_DTYPE = {
+    "half": torch.float16,
+    "float16": torch.float16,
+    "float": torch.float32,
+    "float32": torch.float32,
+    "bfloat16": torch.bfloat16,
+}
 class ModelConfig:
     def __init__(
         self,
@@ -27,7 +33,10 @@ class ModelConfig:
         self.hidden_size = self.hf_text_config.hidden_size
         self.num_hidden_layers = self.hf_text_config.num_hidden_layers
         self.vocab_size = self.hf_text_config.vocab_size
-        self.dtype = torch.float16
+        
+        config_dtype = getattr(self.hf_text_config, "torch_dtype", None)
+        if config_dtype is not None:
+            self.dtype = _STR_DTYPE_TO_TORCH_DTYPE.get(config_dtype, torch.float32)
 
         
 
