@@ -175,7 +175,7 @@ class Batch:
 
         self.out_cache_loc = self.page_manager.page_table[
             page_table_id_mask, self.positions // self.page_manager.page_size
-        ] + (self.positions % self.page_manager.page_size)
+        ] * self.page_manager.page_size + (self.positions % self.page_manager.page_size)
 
     def prepare_for_decode(self):
         self.mode = Mode.DECODE
@@ -184,9 +184,10 @@ class Batch:
         self.input_ids = self.output_ids
         self.output_ids = None
         self.seq_lens = self.seq_lens + 1
+        self.positions = self.seq_lens - 1
 
         ppns_list: List[List[int]] = self.kvcache.allocate_pages_decode(self.seq_lens)
-        last_vpns = self.seq_lens // self.page_manager.page_size
+        last_vpns = self.positions // self.page_manager.page_size
 
         for i, (req, ppns) in enumerate(zip(self.reqs, ppns_list)):
             if len(ppns) > 0:
@@ -194,12 +195,12 @@ class Batch:
                 vpns = torch.tensor([last_vpns[i]], device=self.device, dtype=torch.int32)
                 self.page_manager.write_ppns_decode(req.page_table_id, vpns, ppns)
 
-        self.positions = self.seq_lens - 1
+
         page_table_id_mask = self.page_table_ids
 
         self.out_cache_loc = self.page_manager.page_table[
             page_table_id_mask, self.positions // self.page_manager.page_size
-        ] + (self.positions % self.page_manager.page_size)
+        ] * self.page_manager.page_size + (self.positions % self.page_manager.page_size)
 
     def filter_batch(self):
         """filter out finished requests"""
