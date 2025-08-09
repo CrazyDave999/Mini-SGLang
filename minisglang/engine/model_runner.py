@@ -54,13 +54,12 @@ class ModelRunner:
         device: str,
     ):
         self.tp_rank = tp_rank
+        torch.set_default_device("cuda")
         self.model_config = ModelConfig(model_path)
         self.model = get_model(self.model_config)
         self.sampler = Sampler()
         self.device = device
         self.page_size = server_args.page_size
-        torch.set_default_device("cuda")
-
         # init memory
         self.page_manager = PageManager(
             page_size=server_args.page_size,
@@ -69,7 +68,7 @@ class ModelRunner:
             device=device,
         )
         self.kvcache = KVCache(
-            page_num=self.page_manager.max_page_num,
+            page_num=64,
             page_size=server_args.page_size,
             head_num=self.model_config.num_key_value_heads,
             head_dim=self.model_config.head_dim,

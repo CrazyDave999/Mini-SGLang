@@ -12,12 +12,12 @@ class LinearBase(nn.Module):
         self,
         input_size: int,
         output_size: int,
-        params_dtype: Optional[torch.dtype] = None,
+        dtype: Optional[torch.dtype] = None,
     ):
         super().__init__()
         self.input_size = input_size
         self.output_size = output_size
-        self.params_dtype = params_dtype
+        self.dtype = dtype
         self.output_dim = 0
 
     def forward(
@@ -35,14 +35,14 @@ class ColumnParallelLinear(LinearBase):
         input_size: int,
         output_size: int,
         bias: bool = False,
-        params_dtype: Optional[torch.dtype] = None,
+        dtype: Optional[torch.dtype] = None,
         tp_rank: Optional[int] = None,
         tp_size: Optional[int] = None,
     ):
         super().__init__(
             input_size=input_size,
             output_size=output_size,
-            params_dtype=params_dtype,
+            dtype=dtype,
         )
 
         if tp_rank is None:
@@ -55,7 +55,7 @@ class ColumnParallelLinear(LinearBase):
         self.output_size_per_partition = divide(output_size, tp_size)
 
         self.weight = nn.Parameter(
-            torch.empty(self.output_size_per_partition, self.input_size)
+            torch.empty(self.output_size_per_partition, self.input_size, dtype=dtype)
         )
         self.weight.weight_loader = self.weight_loader
 
@@ -87,7 +87,7 @@ class MergedColumnParallelLinear(ColumnParallelLinear):
         input_size: int,
         output_sizes: List[int],
         bias: bool = False,
-        params_dtype: Optional[torch.dtype] = None,
+        dtype: Optional[torch.dtype] = None,
         tp_rank: Optional[int] = None,
         tp_size: Optional[int] = None,
     ):
@@ -96,7 +96,7 @@ class MergedColumnParallelLinear(ColumnParallelLinear):
             input_size=input_size,
             output_size=sum(output_sizes),
             bias=bias,
-            params_dtype=params_dtype,
+            dtype=dtype,
             tp_rank=tp_rank,
             tp_size=tp_size,
         )
@@ -124,7 +124,7 @@ class QKVParallelLinear(ColumnParallelLinear):
         total_num_heads: int,
         total_num_kv_heads: int,
         bias: bool = True,
-        params_dtype: Optional[torch.dtype] = None,
+        dtype: Optional[torch.dtype] = None,
         tp_rank: Optional[int] = None,
         tp_size: Optional[int] = None,
     ):
@@ -162,7 +162,7 @@ class QKVParallelLinear(ColumnParallelLinear):
             input_size=input_size,
             output_size=output_size,
             bias=bias,
-            params_dtype=params_dtype,
+            dtype=dtype,
             tp_rank=tp_rank,
             tp_size=tp_size,
         )
@@ -195,14 +195,14 @@ class RowParallelLinear(LinearBase):
         input_size: int,
         output_size: int,
         bias: bool = True,
-        params_dtype: Optional[torch.dtype] = None,
+        dtype: Optional[torch.dtype] = None,
         tp_rank: Optional[int] = None,
         tp_size: Optional[int] = None,
     ):
         super().__init__(
             input_size=input_size,
             output_size=output_size,
-            params_dtype=params_dtype,
+            dtype=dtype,
         )
         if tp_rank is None:
             tp_rank = 0
@@ -213,7 +213,7 @@ class RowParallelLinear(LinearBase):
         self.tp_size = tp_size
         self.input_size_per_partition = divide(input_size, tp_size)
         self.weight = nn.Parameter(
-            torch.empty(self.output_size, self.input_size_per_partition)
+            torch.empty(self.output_size, self.input_size_per_partition, dtype=dtype)
         )
         self.weight
         self.weight.weight_loader = self.weight_loader

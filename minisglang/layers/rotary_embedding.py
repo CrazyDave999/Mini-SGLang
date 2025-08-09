@@ -69,6 +69,9 @@ class RotaryEmbedding(nn.Module):
         key: torch.Tensor,
         offsets: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
+        # print(query.dtype, key.dtype, positions.dtype)
+        query = query.to(dtype=torch.bfloat16)
+        key = key.to(dtype=torch.bfloat16)
         if self.head_size in [64, 128, 256, 512]:
             apply_rope_with_cos_sin_cache_inplace(
                 positions=positions,

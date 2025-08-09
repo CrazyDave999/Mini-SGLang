@@ -1,5 +1,6 @@
 from transformers import AutoConfig, PretrainedConfig
 import torch
+
 _STR_DTYPE_TO_TORCH_DTYPE = {
     "half": torch.float16,
     "float16": torch.float16,
@@ -7,6 +8,8 @@ _STR_DTYPE_TO_TORCH_DTYPE = {
     "float32": torch.float32,
     "bfloat16": torch.bfloat16,
 }
+
+
 class ModelConfig:
     def __init__(
         self,
@@ -26,18 +29,19 @@ class ModelConfig:
         self.num_key_value_heads = getattr(
             self.hf_text_config, "num_key_value_heads", None
         )
-        
+
         if self.num_key_value_heads is None:
             self.num_key_value_heads = self.hf_text_config.num_attention_heads
-            
+
         self.hidden_size = self.hf_text_config.hidden_size
         self.num_hidden_layers = self.hf_text_config.num_hidden_layers
         self.vocab_size = self.hf_text_config.vocab_size
-        
+
         config_dtype = getattr(self.hf_text_config, "torch_dtype", None)
         if config_dtype is not None:
-            self.dtype = _STR_DTYPE_TO_TORCH_DTYPE.get(config_dtype, torch.float32)
-
+            self.dtype = config_dtype
+        else:
+            raise ValueError(f"Unknown dtype: {config_dtype}")
         
 
 
@@ -64,6 +68,7 @@ def get_hf_text_config(config: PretrainedConfig):
         return config.language_config
     else:
         return config
+
 
 # Models don't use the same configuration key for determining the maximum
 # context length.  Store them here so we can sanely check them.

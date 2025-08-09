@@ -25,6 +25,7 @@ class LlamaMLP(nn.Module):
         hidden_size: int,
         intermediate_size: int,
         hidden_act: str,
+        dtype: torch.dtype
     ) -> None:
 
         super().__init__()
@@ -32,11 +33,13 @@ class LlamaMLP(nn.Module):
             input_size=hidden_size,
             output_sizes=[intermediate_size] * 2,
             bias=False,
+            dtype=dtype
         )
         self.down_proj = RowParallelLinear(
             input_size=intermediate_size,
             output_size=hidden_size,
             bias=False,
+            dtype=dtype
         )
         assert hidden_act == "silu", "Only silu activation is supported in LlamaMLP"
 
@@ -52,7 +55,7 @@ class LlamaMLP(nn.Module):
 class LlamaAttention(nn.Module):
     def __init__(
         self,
-        config: LlamaConfig,
+        config,
         layer_id: int,
         hidden_size: int,
         num_heads: int,
@@ -61,6 +64,7 @@ class LlamaAttention(nn.Module):
         rope_scaling: Optional[Dict[str, Any]] = None,
         max_position_embeddings: int = 8192,
         bias: bool = False,
+        dtype: torch.dtype = torch.bfloat16
     ) -> None:
         super().__init__()
         self.layer_id = layer_id
@@ -92,11 +96,13 @@ class LlamaAttention(nn.Module):
             self.total_num_heads,
             self.total_num_kv_heads,
             bias=bias,
+            dtype=dtype
         )
         self.o_proj = RowParallelLinear(
             self.total_num_heads * self.head_dim,
             hidden_size,
             bias=bias,
+            dtype=dtype
         )
         self.rotary_emb = get_rope(
             head_size=self.head_dim,
@@ -130,8 +136,9 @@ class LlamaAttention(nn.Module):
 class LlamaDecoderLayer(nn.Module):
     def __init__(
         self,
-        config: LlamaConfig,
+        config,
         layer_id: int,
+        dtype: torch.dtype
     ) -> None:
         super().__init__()
         self.hidden_size = config.hidden_size
@@ -157,11 +164,13 @@ class LlamaDecoderLayer(nn.Module):
             rope_scaling=rope_scaling,
             max_position_embeddings=max_position_embeddings,
             bias=attention_bias,
+            dtype=dtype
         )
         self.mlp = LlamaMLP(
             hidden_size=self.hidden_size,
             intermediate_size=config.intermediate_size,
             hidden_act=config.hidden_act,
+            dtype=dtype
         )
         self.input_layernorm = RMSNorm(
             config.hidden_size,
@@ -198,7 +207,7 @@ class LlamaDecoderLayer(nn.Module):
 class LlamaModel(nn.Module):
     def __init__(
         self,
-        config: LlamaConfig,
+        config,
     ) -> None:
         super().__init__()
         self.config = config
@@ -207,11 +216,11 @@ class LlamaModel(nn.Module):
         self.embed_tokens = VocabParallelEmbedding(
             config.vocab_size,
             config.hidden_size,
-            
+            dtype=config.torch_dtype
         )
         self.layers = nn.ModuleList(
             [
-                LlamaDecoderLayer(config, layer_id=i)
+                LlamaDecoderLayer(config, layer_id=i, dtype=config.torch_dtype)
                 for i in range(config.num_hidden_layers)
             ]
         )
@@ -248,7 +257,7 @@ class LlamaForCausalLM(nn.Module):
 
     def __init__(
         self,
-        config: LlamaConfig,
+        config,
     ) -> None:
         super().__init__()
         self.config = config
@@ -259,11 +268,12 @@ class LlamaForCausalLM(nn.Module):
             num_embeddings=config.vocab_size,
             embedding_dim=config.hidden_size,
             bias=False,
+            dtype=config.torch_dtype
         )
 
     def _init_model(
         self,
-        config: LlamaConfig,
+        config,
     ) -> LlamaModel:
         return LlamaModel(config)
 

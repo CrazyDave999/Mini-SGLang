@@ -10,6 +10,7 @@ class VocabParallelEmbedding(nn.Module):
         self,
         num_embeddings: int,
         embedding_dim: int,
+        dtype: torch.dtype
     ):
         super().__init__()
         # self.tp_rank = dist.get_rank() 
@@ -21,7 +22,7 @@ class VocabParallelEmbedding(nn.Module):
         self.num_embeddings_per_partition = num_embeddings // self.tp_size
         self.vocab_start_idx = self.tp_rank * self.num_embeddings_per_partition
         self.vocab_end_idx = self.vocab_start_idx + self.num_embeddings_per_partition
-        self.weight = nn.Parameter(torch.empty(self.num_embeddings_per_partition, embedding_dim))
+        self.weight = nn.Parameter(torch.empty(self.num_embeddings_per_partition, embedding_dim, dtype=dtype))
         self.weight.weight_loader = self.weight_loader
         
     def weight_loader(self, param: nn.Parameter, loaded_weight: torch.Tensor):
@@ -48,10 +49,11 @@ class ParallelLMHead(VocabParallelEmbedding):
         num_embeddings: int,
         embedding_dim: int,
         bias: bool = False,
+        dtype: torch.dtype = torch.bfloat16
     ):
-        super().__init__(num_embeddings, embedding_dim)
+        super().__init__(num_embeddings, embedding_dim, dtype=dtype)
         if bias:
-            self.bias = nn.Parameter(torch.empty(self.num_embeddings_per_partition))
+            self.bias = nn.Parameter(torch.empty(self.num_embeddings_per_partition, dtype=dtype))
             self.bias.weight_loader = self.weight_loader
         else:
             self.register_parameter("bias", None)
