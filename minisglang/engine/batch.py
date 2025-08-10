@@ -111,7 +111,7 @@ class Batch:
         input_ids = [
             r.fill_ids[len(r.prefix_ppns) * self.page_manager.page_size :] for r in reqs
         ]
-        extend_num_tokens = sum(len(ids) for ids in input_ids)
+
         seq_lens = [len(r.fill_ids) for r in reqs]
         prefix_lens = [len(r.prefix_ppns) * self.page_manager.page_size for r in reqs]
 

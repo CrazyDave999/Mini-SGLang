@@ -9,7 +9,7 @@ from typing import List, Optional
 class ServerArgs:
     model_path: str = None
     tokenizer_path: str = None
-    device: str = None
+    device: str = "cuda"
     
     # Memory and scheduling
     max_running_requests: int = 8

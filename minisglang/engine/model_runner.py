@@ -1,5 +1,10 @@
 import torch
 from torch import nn
+import os
+from glob import glob
+from safetensors import safe_open
+import torch.distributed as dist
+
 from minisglang.engine.batch import Batch
 from minisglang.utils.model_config import ModelConfig
 from minisglang.layers.sampler import Sampler
@@ -10,9 +15,6 @@ from minisglang.layers.attention_backends.torch_native_backend import (
 )
 from minisglang.models.llama import LlamaForCausalLM
 from minisglang.utils.args import ServerArgs
-import os
-from glob import glob
-from safetensors import safe_open
 
 
 def default_weight_loader(param: nn.Parameter, loaded_weight: torch.Tensor):
@@ -49,23 +51,32 @@ class ModelRunner:
     def __init__(
         self,
         server_args: ServerArgs,
-        model_path: str,
+        model_config: ModelConfig,
         tp_rank: int,
-        device: str,
     ):
         self.tp_rank = tp_rank
+        self.tp_size = server_args.tp_size
+        torch.cuda.set_device(self.tp_rank)
+        dist.init_process_group(
+            "nccl", "tcp://localhost:3300", world_size=self.tp_size, rank=self.tp_rank, device_id=torch.device("cuda", self.tp_rank)
+        )
+
+
+        self.model_config = model_config
+
         torch.set_default_device("cuda")
-        self.model_config = ModelConfig(model_path)
+        torch.set_default_dtype(self.model_config.dtype)
         self.model = get_model(self.model_config)
         self.sampler = Sampler()
-        self.device = device
+
+        self.device = server_args.device
         self.page_size = server_args.page_size
         # init memory
         self.page_manager = PageManager(
             page_size=server_args.page_size,
             max_req_num=server_args.max_running_requests,
             max_page_num=server_args.max_total_tokens // server_args.page_size,
-            device=device,
+            device=self.device,
         )
         self.kvcache = KVCache(
             page_num=64,
@@ -74,7 +85,7 @@ class ModelRunner:
             head_dim=self.model_config.head_dim,
             dtype=self.model_config.dtype,
             layer_num=self.model_config.num_hidden_layers,
-            device=device,
+            device=self.device,
         )
 
         self.attn_backend = TorchNativeAttnBackend(self)

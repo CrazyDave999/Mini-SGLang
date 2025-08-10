@@ -1,11 +1,11 @@
 import torch
 from torch import nn
-from typing import Any, Dict, Iterable, List, Optional, Set, Tuple, Union
+from typing import Any, Dict, Optional, Tuple
 from transformers import LlamaConfig
+
 from minisglang.layers.attention import Attention
 from minisglang.layers.activation import SiluAndMul
 from minisglang.layers.linear import (
-    ColumnParallelLinear,
     MergedColumnParallelLinear,
     QKVParallelLinear,
     RowParallelLinear,
@@ -257,19 +257,21 @@ class LlamaForCausalLM(nn.Module):
 
     def __init__(
         self,
-        config,
+        config: LlamaConfig,
     ) -> None:
         super().__init__()
         self.config = config
         self.model = self._init_model(config)
 
-        
-        self.lm_head = ParallelLMHead(
-            num_embeddings=config.vocab_size,
-            embedding_dim=config.hidden_size,
-            bias=False,
-            dtype=config.torch_dtype
-        )
+        if self.config.tie_word_embeddings:
+            self.lm_head = self.model.embed_tokens
+        else:
+            self.lm_head = ParallelLMHead(
+                num_embeddings=config.vocab_size,
+                embedding_dim=config.hidden_size,
+                bias=False,
+                dtype=config.torch_dtype
+            )
 
     def _init_model(
         self,

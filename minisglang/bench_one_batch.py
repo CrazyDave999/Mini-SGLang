@@ -134,9 +134,8 @@ def load_model(server_args, tp_rank):
     )
     model_runner = ModelRunner(
         server_args=server_args,
-        model_path=server_args.model_path,
+        model_config=model_config,
         tp_rank=tp_rank,
-        device=server_args.device,
     )
     
     tokenizer = AutoTokenizer.from_pretrained(server_args.tokenizer_path)
