@@ -147,9 +147,9 @@ def load_model(server_args, tp_rank):
 
 def prepare_inputs_for_correctness_test(bench_args, tokenizer):
     prompts = [
-        "The capital of France is",
-        "The capital of the United Kindom is",
-        "Today is a sunny day and I like",
+        "Where there is a will, there is a way.",
+        "春天在哪里呀，春天在哪里？",
+        "李华生病了，他用英语给老师写请假条：",
     ]
     input_ids = [tokenizer.encode(p) for p in prompts]
     sampling_params = SamplingParams(
@@ -292,7 +292,6 @@ def main(server_args, bench_args):
         for proc in workers:
             proc.join()
 
-        proc.terminate()
 
 
 if __name__ == "__main__":

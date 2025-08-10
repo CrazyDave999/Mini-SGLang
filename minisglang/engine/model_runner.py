@@ -88,7 +88,7 @@ class ModelRunner:
         batch.attn_backend = self.attn_backend
         logits_output = self.model.forward(batch.input_ids, batch.positions, batch)
 
-        temperatures = torch.tensor([1.0] * len(batch.seq_lens), device=self.device)
+        temperatures = torch.tensor([0.0] * len(batch.seq_lens), device=self.device)
         next_token_ids = self.sampler(logits=logits_output, temperatures=temperatures)
 
         return logits_output, next_token_ids
