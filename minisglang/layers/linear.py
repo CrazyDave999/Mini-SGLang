@@ -28,7 +28,56 @@ class LinearBase(nn.Module):
             "LinearBase forward not implemented. Subclasses should implement this method."
         )
 
+class ReplicatedLinear(LinearBase):
+    """Replicated Linear layer, no sharding weights
 
+    Args:
+        input_size: input dimension of the linear layer.
+        output_size: output dimension of the linear layer.
+        bias: If true, add bias.
+        skip_bias_add: If true, skip adding bias but instead return it.
+        params_dtype: Data type for the parameters.
+        quant_config: Quantization configure.
+        prefix: The name of the layer in the state dict, including all parents
+                        (e.g. model.layers.0.qkv_proj)
+    """
+    def __init__(
+        self,
+        input_size: int,
+        output_size: int,
+        bias: bool = True,
+        params_dtype: Optional[torch.dtype] = None,
+    ):
+        super().__init__(
+            input_size,
+            output_size,
+            params_dtype,
+        )
+
+        # All the linear layer supports quant method.
+        assert self.quant_method is not None
+        self.weight = nn.Parameter(
+            torch.empty(self.output_size, self.input_size, dtype=self.params_dtype)
+        )
+
+        if bias:
+            self.bias = nn.Parameter(torch.empty(self.output_size))
+            self.bias.weight_loader = self.weight_loader
+        else:
+            self.register_parameter("bias", None)
+
+    def weight_loader(self, param: Parameter, loaded_weight: torch.Tensor):
+        # If the weight on disk does not have a shape, give it one
+        # (such scales for AutoFp8).
+        if len(loaded_weight.shape) == 0:
+            loaded_weight = loaded_weight.reshape(1)
+
+        assert param.size() == loaded_weight.size()
+        param.data.copy_(loaded_weight)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return F.linear(x, self.weight, self.bias)
+    
 class ColumnParallelLinear(LinearBase):
     def __init__(
         self,
