@@ -18,6 +18,7 @@ class LinearBase(nn.Module):
         self.input_size = input_size
         self.output_size = output_size
         self.dtype = dtype
+        self.input_dim = 1
         self.output_dim = 0
 
     def forward(
@@ -231,10 +232,11 @@ class RowParallelLinear(LinearBase):
         return y
 
     def weight_loader(self, param: Parameter, loaded_weight: torch.Tensor):
-        output_dim = self.output_dim
+        input_dim = self.input_dim
 
         param_data = param.data
-        shard_size = param_data.size(output_dim)
+        shard_size = param_data.size(input_dim)
         start_idx = self.tp_rank * shard_size
-        loaded_weight = loaded_weight.narrow(output_dim, start_idx, shard_size)
+        loaded_weight = loaded_weight.narrow(input_dim, start_idx, shard_size)
+        # print(f"[TP{self.tp_rank}] param_data.shape: {param_data.shape}, loaded_weight.shape: {loaded_weight.shape}")
         param_data.copy_(loaded_weight)

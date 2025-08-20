@@ -81,7 +81,7 @@ class ModelRunner:
         self.kvcache = KVCache(
             page_num=64,
             page_size=server_args.page_size,
-            head_num=self.model_config.num_key_value_heads,
+            head_num=self.model_config.get_num_kv_heads_per_GPU(self.tp_size),
             head_dim=self.model_config.head_dim,
             dtype=self.model_config.dtype,
             layer_num=self.model_config.num_hidden_layers,

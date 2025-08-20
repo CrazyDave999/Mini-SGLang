@@ -43,6 +43,9 @@ class ModelConfig:
         else:
             raise ValueError(f"Unknown dtype: {config_dtype}")
         
+    def get_num_kv_heads_per_GPU(self, tp_size: int) -> int:
+        return max(1, self.num_key_value_heads // tp_size)
+
 
 
 def get_hf_text_config(config: PretrainedConfig):
