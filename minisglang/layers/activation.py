@@ -10,3 +10,7 @@ class SiluAndMul(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x, y = x.chunk(2, dim=-1)
         return F.silu(x) * y
+
+def silu_and_mul(x: torch.Tensor) -> torch.Tensor:
+    x, y = x.chunk(2, dim=-1)
+    return F.silu(x) * y

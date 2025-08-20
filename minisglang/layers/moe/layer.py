@@ -1,38 +1,19 @@
 # Adapted from https://github.com/vllm-project/vllm/blob/a6221a144af772fd1a68fe7e627935dc53e81738/vllm/model_executor/layers/fused_moe/layer.py
 
-from abc import abstractmethod
 from enum import Enum
 from typing import Callable, List, Optional, Tuple
 
 import torch
+import torch.distributed as dist
 
-from sglang.srt.custom_op import CustomOp
-from sglang.srt.distributed import (
-    get_tensor_model_parallel_rank,
-    get_tensor_model_parallel_world_size,
-    tensor_model_parallel_all_reduce,
-)
-from sglang.srt.layers.moe.fused_moe_native import moe_forward_native
-from sglang.srt.layers.moe.topk import select_experts
-from sglang.srt.layers.quantization.base_config import (
-    QuantizationConfig,
-    QuantizeMethodBase,
-)
-from sglang.srt.utils import get_bool_env_var, is_hip, set_weight_attrs
 
-if torch.cuda.is_available():
-    from sglang.srt.layers.moe.fused_moe_triton.fused_moe import fused_experts
-else:
-    fused_experts = None  # type: ignore
+
+from minisglang.layers.moe.topk import select_experts
+
+
+from minisglang.layers.moe.fused_moe import fused_experts
 
 import logging
-
-_is_hip = is_hip()
-
-if _is_hip:
-    from aiter import ActivationType
-    from aiter.fused_moe_bf16_asm import ck_moe_2stages
-    from aiter.ops.shuffle import shuffle_weight
 
 logger = logging.getLogger(__name__)
 
@@ -43,191 +24,6 @@ class FusedMoeWeightScaleSupported(Enum):
     GROUP = "group"
     BLOCK = "block"
 
-
-class FusedMoEMethodBase(QuantizeMethodBase):
-
-    @abstractmethod
-    def create_weights(
-        self,
-        layer: torch.nn.Module,
-        num_experts: int,
-        hidden_size: int,
-        intermediate_size: int,
-        params_dtype: torch.dtype,
-        **extra_weight_attrs,
-    ):
-        raise NotImplementedError
-
-    @abstractmethod
-    def apply(
-        self,
-        layer: torch.nn.Module,
-        x: torch.Tensor,
-        router_logits: torch.Tensor,
-        top_k: int,
-        renormalize: bool,
-        use_grouped_topk: bool,
-    ) -> torch.Tensor:
-        raise NotImplementedError
-
-
-class UnquantizedFusedMoEMethod(FusedMoEMethodBase, CustomOp):
-    """MoE method without quantization."""
-
-    def create_weights(
-        self,
-        layer: torch.nn.Module,
-        num_experts: int,
-        hidden_size: int,
-        intermediate_size: int,
-        params_dtype: torch.dtype,
-        **extra_weight_attrs,
-    ):
-        # Fused gate_up_proj (column parallel)
-        w13_weight = torch.nn.Parameter(
-            torch.empty(
-                num_experts, 2 * intermediate_size, hidden_size, dtype=params_dtype
-            ),
-            requires_grad=False,
-        )
-        layer.register_parameter("w13_weight", w13_weight)
-        set_weight_attrs(w13_weight, extra_weight_attrs)
-
-        # down_proj (row parallel)
-        w2_weight = torch.nn.Parameter(
-            torch.empty(
-                num_experts, hidden_size, intermediate_size, dtype=params_dtype
-            ),
-            requires_grad=False,
-        )
-        layer.register_parameter("w2_weight", w2_weight)
-        set_weight_attrs(w2_weight, extra_weight_attrs)
-
-    def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
-        if _is_hip and get_bool_env_var("SGLANG_AITER_MOE"):
-            layer.w13_weight = torch.nn.Parameter(
-                shuffle_weight(layer.w13_weight.data, (16, 16)),
-                requires_grad=False,
-            )
-            torch.cuda.empty_cache()
-            layer.w2_weight = torch.nn.Parameter(
-                shuffle_weight(layer.w2_weight.data, (16, 16)),
-                requires_grad=False,
-            )
-            torch.cuda.empty_cache()
-        return
-
-    def apply(
-        self,
-        layer: torch.nn.Module,
-        x: torch.Tensor,
-        router_logits: torch.Tensor,
-        top_k: int,
-        renormalize: bool,
-        use_grouped_topk: bool,
-        topk_group: Optional[int] = None,
-        num_expert_group: Optional[int] = None,
-        custom_routing_function: Optional[Callable] = None,
-        correction_bias: Optional[torch.Tensor] = None,
-        activation: str = "silu",
-        apply_router_weight_on_input: bool = False,
-        inplace: bool = True,
-        no_combine: bool = False,
-        routed_scaling_factor: Optional[float] = None,
-    ) -> torch.Tensor:
-        return self.forward(
-            x=x,
-            layer=layer,
-            router_logits=router_logits,
-            top_k=top_k,
-            renormalize=renormalize,
-            use_grouped_topk=use_grouped_topk,
-            topk_group=topk_group,
-            num_expert_group=num_expert_group,
-            custom_routing_function=custom_routing_function,
-            correction_bias=correction_bias,
-            activation=activation,
-            apply_router_weight_on_input=apply_router_weight_on_input,
-            inplace=inplace,
-            no_combine=no_combine,
-            routed_scaling_factor=routed_scaling_factor,
-        )
-
-    def forward_cuda(
-        self,
-        layer: torch.nn.Module,
-        x: torch.Tensor,
-        use_grouped_topk: bool,
-        top_k: int,
-        router_logits: torch.Tensor,
-        renormalize: bool,
-        topk_group: Optional[int] = None,
-        num_expert_group: Optional[int] = None,
-        custom_routing_function: Optional[Callable] = None,
-        correction_bias: Optional[torch.Tensor] = None,
-        activation: str = "silu",
-        apply_router_weight_on_input: bool = False,
-        inplace: bool = True,
-        no_combine: bool = False,
-        routed_scaling_factor: Optional[float] = None,
-    ) -> torch.Tensor:
-        topk_weights, topk_ids = select_experts(
-            hidden_states=x,
-            router_logits=router_logits,
-            use_grouped_topk=use_grouped_topk,
-            top_k=top_k,
-            renormalize=renormalize,
-            topk_group=topk_group,
-            num_expert_group=num_expert_group,
-            custom_routing_function=custom_routing_function,
-            correction_bias=correction_bias,
-            routed_scaling_factor=routed_scaling_factor,
-        )
-
-        
-        return fused_experts(
-            hidden_states=x,
-            w1=layer.w13_weight,
-            w2=layer.w2_weight,
-            topk_weights=topk_weights,
-            topk_ids=topk_ids,
-            inplace=inplace and not no_combine,
-            activation=activation,
-            apply_router_weight_on_input=apply_router_weight_on_input,
-            no_combine=no_combine,
-        )
-
-    def forward_cpu(
-        self,
-        layer: torch.nn.Module,
-        x: torch.Tensor,
-        use_grouped_topk: bool,
-        top_k: int,
-        router_logits: torch.Tensor,
-        renormalize: bool,
-        topk_group: Optional[int] = None,
-        num_expert_group: Optional[int] = None,
-        custom_routing_function: Optional[Callable] = None,
-        correction_bias: Optional[torch.Tensor] = None,
-        inplace: bool = True,
-    ) -> torch.Tensor:
-        return moe_forward_native(
-            layer,
-            x,
-            use_grouped_topk,
-            top_k,
-            router_logits,
-            renormalize,
-            topk_group,
-            num_expert_group,
-            custom_routing_function,
-            correction_bias,
-        )
-
-    def forward_tpu(self, *args, **kwargs) -> torch.Tensor:
-        raise NotImplementedError("The TPU backend currently does not support MoE.")
-
-    forward_native = forward_cuda
 
 
 class FusedMoE(torch.nn.Module):
@@ -264,9 +60,7 @@ class FusedMoE(torch.nn.Module):
         use_grouped_topk: bool = False,
         num_expert_group: Optional[int] = None,
         topk_group: Optional[int] = None,
-        quant_config: Optional[QuantizationConfig] = None,
         tp_size: Optional[int] = None,
-        prefix: str = "",
         custom_routing_function: Optional[Callable] = None,
         correction_bias: Optional[torch.Tensor] = None,
         activation: str = "silu",
@@ -282,7 +76,7 @@ class FusedMoE(torch.nn.Module):
             params_dtype = torch.get_default_dtype()
 
         self.tp_size = (
-            tp_size if tp_size is not None else get_tensor_model_parallel_world_size()
+            tp_size if tp_size is not None else dist.get_world_size()
         )
         self.routed_scaling_factor = routed_scaling_factor
         self.top_k = top_k
@@ -305,21 +99,11 @@ class FusedMoE(torch.nn.Module):
         self.no_combine = no_combine
         self.local_num_experts = num_experts
 
-        if quant_config is None:
-            self.quant_method: Optional[QuantizeMethodBase] = (
-                UnquantizedFusedMoEMethod()
-            )
-        else:
-            self.quant_method = quant_config.get_quant_method(self, prefix)
-        assert self.quant_method is not None
 
-        self.quant_method.create_weights(
-            layer=self,
+        self.create_weights(
             num_experts=num_experts,
             hidden_size=hidden_size,
-            # FIXME: figure out which intermediate_size to use
             intermediate_size=self.intermediate_size_per_partition,
-            intermediate_size_per_partition=self.intermediate_size_per_partition,
             params_dtype=params_dtype,
             weight_loader=self.weight_loader,
         )
@@ -476,17 +260,6 @@ class FusedMoE(torch.nn.Module):
         shard_id: str,
         expert_id: int,
     ) -> None:
-        # compressed-tensors checkpoints with packed weights are stored flipped
-        # TODO (mgoin): check self.quant_method.quant_config.quant_format
-        # against known CompressionFormat enum values that have this quality
-        loaded_weight = (
-            loaded_weight.t().contiguous()
-            if (
-                self.quant_method.__class__.__name__
-                == "CompressedTensorsWNA16MoEMethod"
-            )
-            else loaded_weight
-        )
 
         if shard_id not in ("w1", "w2", "w3"):
             raise ValueError(
@@ -500,7 +273,7 @@ class FusedMoE(torch.nn.Module):
         SHARD_ID_TO_SHARDED_DIM = {"w1": 0, "w2": 1, "w3": 0}
 
         expert_data = param.data[expert_id]
-        tp_rank = get_tensor_model_parallel_rank()
+        tp_rank = dist.get_rank()
 
         # is_transposed: if the dim to shard the weight
         # should be flipped. Required by GPTQ, compressed-tensors
@@ -512,9 +285,6 @@ class FusedMoE(torch.nn.Module):
 
         # Case input scale: input_scale loading is only supported for fp8
         if "input_scale" in weight_name:
-            # INT4-FP8 (INT4 MoE Weight, FP8 Compute): Adjust input_scale for e4m3fnuz (AMD)
-            if _is_hip and get_bool_env_var("SGLANG_INT4_WEIGHT"):
-                loaded_weight = loaded_weight * 2.0
 
             # this is needed for compressed-tensors only
             loaded_weight = loaded_weight.to(param.data.device)
@@ -554,9 +324,6 @@ class FusedMoE(torch.nn.Module):
             # specific to each case
             quant_method = getattr(param, "quant_method", None)
             if quant_method == FusedMoeWeightScaleSupported.CHANNEL.value:
-                # INT4-FP8 (INT4 MoE Weight, FP8 Compute): Adjust INT4 column-wise scaling number to e4m3fnuz (AMD)
-                if _is_hip and get_bool_env_var("SGLANG_INT4_WEIGHT"):
-                    loaded_weight = loaded_weight * 0.5
 
                 self._load_per_channel_weight_scale(
                     shard_id=shard_id,
@@ -577,9 +344,6 @@ class FusedMoE(torch.nn.Module):
                     tp_rank=tp_rank,
                 )
             elif quant_method == FusedMoeWeightScaleSupported.TENSOR.value:
-                # INT4-FP8 (INT4 MoE Weight, FP8 Compute): Adjust FP8 per-tensor scaling number for e4m3fnuz (AMD)
-                if _is_hip and get_bool_env_var("SGLANG_INT4_WEIGHT"):
-                    loaded_weight = loaded_weight * 2.0
 
                 self._load_per_tensor_weight_scale(
                     shard_id=shard_id,
@@ -615,27 +379,55 @@ class FusedMoE(torch.nn.Module):
     def forward(self, hidden_states: torch.Tensor, router_logits: torch.Tensor):
         assert self.quant_method is not None
 
-        # Matrix multiply.
-        final_hidden_states = self.quant_method.apply(
-            layer=self,
-            x=hidden_states,
+        topk_weights, topk_ids = select_experts(
+            hidden_states=hidden_states,
             router_logits=router_logits,
             top_k=self.top_k,
             renormalize=self.renormalize,
-            use_grouped_topk=self.use_grouped_topk,
-            topk_group=self.topk_group,
-            num_expert_group=self.num_expert_group,
-            custom_routing_function=self.custom_routing_function,
-            correction_bias=self.correction_bias,
+        )
+        
+        final_hidden_states = fused_experts(
+            hidden_states=hidden_states,
+            w1=self.w13_weight,
+            w2=self.w2_weight,
+            topk_weights=topk_weights,
+            topk_ids=topk_ids,
+            inplace=self.inplace and not self.no_combine,
             activation=self.activation,
             apply_router_weight_on_input=self.apply_router_weight_on_input,
-            routed_scaling_factor=self.routed_scaling_factor,
+            no_combine=self.no_combine,
         )
 
         if self.reduce_results and self.tp_size > 1:
-            final_hidden_states = tensor_model_parallel_all_reduce(final_hidden_states)
+            final_hidden_states = dist.all_reduce(final_hidden_states)
 
         return final_hidden_states
+    
+    def create_weights(
+        self,
+        num_experts: int,
+        hidden_size: int,
+        intermediate_size: int,
+        param_dtype: torch.dtype,
+    ):
+        # Fused gate_up_proj (column parallel)
+        w13_weight = torch.nn.Parameter(
+            torch.empty(
+                num_experts, 2 * intermediate_size, hidden_size, dtype=param_dtype
+            ),
+            requires_grad=False,
+        )
+        self.register_parameter("w13_weight", w13_weight)
+        
+        # down_proj (row parallel)
+        w2_weight = torch.nn.Parameter(
+            torch.empty(
+                num_experts, hidden_size, intermediate_size, dtype=param_dtype
+            ),
+            requires_grad=False,
+        )
+        self.register_parameter("w2_weight", w2_weight)
+        
 
     @classmethod
     def make_expert_params_mapping(
