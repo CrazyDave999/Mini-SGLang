@@ -46,9 +46,9 @@ class ColumnParallelLinear(LinearBase):
         )
 
         if tp_rank is None:
-            tp_rank = 0
+            tp_rank = dist.get_rank()
         if tp_size is None:
-            tp_size = 1
+            tp_size = dist.get_world_size()
         self.tp_rank = tp_rank
         self.tp_size = tp_size
 
@@ -136,9 +136,9 @@ class QKVParallelLinear(ColumnParallelLinear):
         )
         # Divide the weight matrix along the last dimension.
         if tp_rank is None:
-            tp_rank = 0
+            tp_rank = dist.get_rank()
         if tp_size is None:
-            tp_size = 1
+            tp_size = dist.get_world_size()
         self.tp_rank = tp_rank
         self.tp_size = tp_size
         self.num_heads = divide(total_num_heads, tp_size)
@@ -205,9 +205,9 @@ class RowParallelLinear(LinearBase):
             dtype=dtype,
         )
         if tp_rank is None:
-            tp_rank = 0
+            tp_rank = dist.get_rank()
         if tp_size is None:
-            tp_size = 1
+            tp_size = dist.get_world_size()
 
         self.tp_rank = tp_rank
         self.tp_size = tp_size

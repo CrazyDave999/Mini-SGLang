@@ -1,7 +1,9 @@
+import dis
 import torch
 from torch import nn
 from typing import Any, Dict, Optional, Tuple
 from transformers import LlamaConfig
+import torch.distributed as dist
 
 from minisglang.layers.attention import Attention
 from minisglang.layers.activation import SiluAndMul
@@ -68,7 +70,7 @@ class LlamaAttention(nn.Module):
     ) -> None:
         super().__init__()
         self.layer_id = layer_id
-        tp_size = 1
+        tp_size = dist.get_world_size()
         self.total_num_heads = num_heads
         assert self.total_num_heads % tp_size == 0
         self.num_heads = self.total_num_heads // tp_size
