@@ -40,6 +40,9 @@ class Req:
     def finished(self):
         return self.finished_reason is not None
 
+    def init_next_round_input(self):
+        self.fill_ids = self.origin_input_ids + self.output_ids
+
     def check_finished(self):
         if self.finished():
             return
@@ -95,6 +98,8 @@ class Batch:
 
     def is_empty(self):
         return len(self.reqs) == 0
+    def batch_size(self):
+        return len(self.reqs)
 
     def alloc_req_slots(self, num_reqs: int):
         page_table_ids = self.page_manager.allocate(num_reqs)
@@ -192,9 +197,10 @@ class Batch:
         for i, (req, ppns) in enumerate(zip(self.reqs, ppns_list)):
             if len(ppns) > 0:
                 ppns = torch.tensor(ppns, device=self.device, dtype=torch.int32)
-                vpns = torch.tensor([last_vpns[i]], device=self.device, dtype=torch.int32)
+                vpns = torch.tensor(
+                    [last_vpns[i]], device=self.device, dtype=torch.int32
+                )
                 self.page_manager.write_ppns_decode(req.page_table_id, vpns, ppns)
-
 
         page_table_id_mask = self.page_table_ids
 
@@ -216,3 +222,14 @@ class Batch:
         self.prefix_lens = [self.prefix_lens[i] for i in keep_indices]
         self.input_ids = self.input_ids[keep_indices]
         self.output_ids = self.output_ids[keep_indices]
+        
+    def merge_batch(self, other):
+        """merge the last prefill batch into the running decode batch"""
+        self.page_table_ids = torch.cat(
+            [self.page_table_ids, other.page_table_ids]
+        )
+        self.seq_lens = torch.cat([self.seq_lens, other.seq_lens])
+        self.out_cache_loc = None
+        self.output_ids = torch.cat([self.output_ids, other.output_ids])
+        self.reqs.extend(other.reqs)
+        

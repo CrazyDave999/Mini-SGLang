@@ -1,6 +1,8 @@
+import random
 from typing import List
 import zmq
 import torch
+from enum import Enum
 
 from minisglang.engine.model_runner import ModelRunner
 from minisglang.utils.ipc import get_zmq_socket
@@ -8,6 +10,7 @@ from minisglang.engine.batch import Batch, Req
 from dataclasses import dataclass
 
 from minisglang.utils.args import ServerArgs
+from minisglang.memory.radix_cache import PagedRadixCache
 
 
 @dataclass
@@ -23,6 +26,55 @@ class BatchTokenIDOut:
     finished_reasons: List[str]
 
 
+class SchedulePolicyMode(Enum):
+    LPM = "lpm"
+    FCFS = "fcfs"
+    RANDOM = "random"
+
+
+class SchedulePolicy:
+    def __init__(
+        self,
+        policy: str,
+        tree_cache: PagedRadixCache,
+    ):
+        self.tree_cache = tree_cache
+        self.policy_mode = SchedulePolicyMode(policy.upper())
+
+    def calc_priority(self, waiting_queue: List[Req]):
+        policy_mode = self.policy_mode
+        # Turn off the expensive prefix matching and sorting when the #queue is large.
+        if policy_mode == SchedulePolicyMode.LPM and len(waiting_queue) > 128:
+            policy_mode = SchedulePolicyMode.FCFS
+
+        if policy_mode == SchedulePolicyMode.LPM:
+            self._compute_prefix_matches(waiting_queue)
+            SchedulePolicy._sort_by_longest_prefix(waiting_queue)
+        elif policy_mode == SchedulePolicyMode.FCFS:
+            pass
+        elif policy_mode == SchedulePolicyMode.RANDOM:
+            SchedulePolicy._sort_randomly(waiting_queue)
+        else:
+            raise ValueError(f"Unknown schedule policy mode: {policy_mode}")
+
+    @staticmethod
+    def _sort_by_longest_prefix(waiting_queue: List[Req]):
+        waiting_queue.sort(key=lambda req: len(req.prefix), reverse=True)
+
+    @staticmethod
+    def _sort_randomly(waiting_queue: List[Req]) -> None:
+        random.shuffle(waiting_queue)
+
+    def _compute_prefix_matches(self, waiting_queue: List[Req]):
+        """
+        Computes and caches the matching prefixes for requests in the waiting queue
+        """
+        for r in waiting_queue:
+            r.prefix_ppns, r.last_node = self.tree_cache.match_prefix(
+                key=r.fill_ids,
+            )
+
+
 class Scheduler:
     """
     For receiving reqs from tokenizer, managing the waiting queue
@@ -36,12 +88,25 @@ class Scheduler:
     ):
 
         self.tp_rank = tp_rank
-        self.max_running_requests = max_running_requests
+        self.max_running_requests = server_args.max_running_requests
+        self.stream_interval = server_args.stream_interval
+        
         self.model_runner = ModelRunner(
             server_args=server_args,
             model_path=model_path,
             tp_rank=tp_rank,
             device="cuda",
+        )
+        self.page_manager = self.model_runner.page_manager
+        self.kvcache = self.model_runner.kvcache
+
+        self.tree_cache = PagedRadixCache(
+            page_manager=self.page_manager, kvcache=self.kvcache
+        )
+
+        self.policy = SchedulePolicy(
+            policy=server_args.schedule_policy,
+            tree_cache=self.tree_cache,
         )
 
         context = zmq.Context(2)
@@ -56,7 +121,7 @@ class Scheduler:
             self.recv_from_engine = None
 
         self.waiting_queue: List[Req] = []
-        # self.running_batch: Batch = Batch(reqs=[])
+        self.running_batch: Batch = Batch(reqs=[])
 
     def loop(self):
         while True:
@@ -93,24 +158,45 @@ class Scheduler:
     def get_next_batch_to_run(self) -> Batch:
         """Get the next batch to run."""
         if self.last_batch is not None and self.last_batch.mode.is_prefill():
+            # last_bs = self.last_batch.batch_size()
             self.last_batch.filter_batch()
+
             if not self.last_batch.is_empty():
-                self.last_batch.prepare_for_decode()
-                return self.last_batch
+                if self.running_batch.is_empty():
+                    self.running_batch = self.last_batch
+                else:
+                    self.running_batch.merge_batch(self.last_batch)
 
         new_batch = self.get_new_batch_prefill()
         if new_batch is not None:
+            # Run prefill first if possible
             return new_batch
+        else:
+            # Run decode batch
+            if not self.running_batch.is_empty():
+                self.running_batch.filter_batch()
+                # TODO check if decode out of memory
+                self.running_batch.prepare_for_decode()
+                return self.running_batch
 
         return None
 
     def get_new_batch_prefill(self) -> Batch:
-        if len(self.waiting_queue) == 0:
+        running_bs = self.running_batch.batch_size()
+        if running_bs >= self.max_running_requests:
             return None
 
-        can_run_list: List[Req] = self.waiting_queue[
-            : min(len(self.waiting_queue), self.max_running_requests)
-        ]
+        # Get priority queue
+        self.policy.calc_priority(self.waiting_queue)
+
+        can_run_list = []
+
+        for req in self.waiting_queue:
+            if running_bs + len(can_run_list) >= self.max_running_requests:
+                break
+            # TODO do some max token check
+            req.init_next_round_input()
+            can_run_list.append(req)
 
         self.waiting_queue = [
             req for req in self.waiting_queue if req not in set(can_run_list)
@@ -135,10 +221,12 @@ class Scheduler:
         )
 
     def process_batch_result(self, batch: Batch, result: GenerationBatchResult):
-        next_token_ids, bid = result.next_token_ids, result.bid
-        for i, (req, next_token_id) in enumerate(zip(batch.reqs, next_token_ids)):
+        next_token_ids, bid = result.next_token_ids.to_list(), result.bid
+        for req, next_token_id in zip(batch.reqs, next_token_ids):
             req.output_ids.append(next_token_id)
             req.check_finished()
+            if req.finished():
+                self.tree_cache.cache_finished_req(req)
 
         self.stream_output(batch.reqs)
 
@@ -146,7 +234,7 @@ class Scheduler:
         rids = []
         finished_reasons = []
         for req in reqs:
-            if req.finished():
+            if req.finished() or len(req.output_ids % self.stream_interval == 0):
                 rids.append(req.rid)
                 finished_reasons.append(req.finished_reason)
 

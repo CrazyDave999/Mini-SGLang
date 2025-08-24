@@ -1,3 +1,4 @@
+from minisglang.memory import page_manager
 import torch
 from torch import nn
 import os
@@ -16,6 +17,7 @@ from minisglang.layers.attention_backends.torch_native_backend import (
 from minisglang.models.llama import LlamaForCausalLM
 from minisglang.utils.args import ServerArgs
 
+from minisglang.memory.radix_cache import PagedRadixCache
 
 def default_weight_loader(param: nn.Parameter, loaded_weight: torch.Tensor):
     param.data.copy_(loaded_weight)
@@ -87,6 +89,8 @@ class ModelRunner:
             layer_num=self.model_config.num_hidden_layers,
             device=self.device,
         )
+        
+
 
         self.attn_backend = TorchNativeAttnBackend(self)
 
