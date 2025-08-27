@@ -1,9 +1,14 @@
+import pickle
+from typing import List, Any, Optional
+import numpy as np
 import psutil
 import zmq
 from zmq import SocketType
 import threading
 import signal
 import sys
+import torch.distributed as dist
+import torch
 
 def get_zmq_socket(
     context: zmq.Context, socket_type: zmq.SocketType, endpoint: str, bind: bool
@@ -82,3 +87,47 @@ def kill_process_tree(parent_pid, include_parent: bool = True, skip_pid: int = N
             itself.send_signal(signal.SIGQUIT)
         except psutil.NoSuchProcess:
             pass
+
+
+def broadcast_pyobj(
+    data: List[Any],
+    rank: int,
+    dist_group: Optional[torch.distributed.ProcessGroup] = None,
+    src: int = 0,
+    force_cpu_device: bool = False,
+):
+    """Broadcast inputs from rank=0 to all other ranks with torch.dist backend."""
+    device = torch.device(
+        "cuda" if torch.cuda.is_available() and not force_cpu_device else "cpu"
+    )
+
+    if rank == 0:
+        if len(data) == 0:
+            tensor_size = torch.tensor([0], dtype=torch.long, device=device)
+            dist.broadcast(tensor_size, src=src, group=dist_group)
+        else:
+            serialized_data = pickle.dumps(data)
+            size = len(serialized_data)
+
+            tensor_data = torch.ByteTensor(
+                np.frombuffer(serialized_data, dtype=np.uint8)
+            ).to(device)
+            tensor_size = torch.tensor([size], dtype=torch.long, device=device)
+
+            dist.broadcast(tensor_size, src=src, group=dist_group)
+            dist.broadcast(tensor_data, src=src, group=dist_group)
+        return data
+    else:
+        tensor_size = torch.tensor([0], dtype=torch.long, device=device)
+        dist.broadcast(tensor_size, src=src, group=dist_group)
+        size = tensor_size.item()
+
+        if size == 0:
+            return []
+
+        tensor_data = torch.empty(size, dtype=torch.uint8, device=device)
+        dist.broadcast(tensor_data, src=src, group=dist_group)
+
+        serialized_data = bytes(tensor_data.cpu().numpy())
+        data = pickle.loads(serialized_data)
+        return data

@@ -3,6 +3,7 @@ from typing import List
 import zmq
 import torch
 from enum import Enum
+import torch.distributed as dist
 
 from minisglang.engine.model_runner import ModelRunner
 from minisglang.utils.ipc import get_zmq_socket
@@ -11,6 +12,7 @@ from dataclasses import dataclass
 
 from minisglang.utils.args import ServerArgs
 from minisglang.memory.radix_cache import PagedRadixCache
+from minisglang.utils.ipc import broadcast_pyobj
 
 
 @dataclass
@@ -24,6 +26,10 @@ class GenerationBatchResult:
 class BatchTokenIDOut:
     rids: List[int]
     finished_reasons: List[str]
+
+    # for incremental decoding
+    decode_ids_list: List[List[int]]
+    read_offsets: List[int]
 
 
 class SchedulePolicyMode(Enum):
@@ -88,9 +94,10 @@ class Scheduler:
     ):
 
         self.tp_rank = tp_rank
+        self.tp_size = server_args.tp_size
         self.max_running_requests = server_args.max_running_requests
         self.stream_interval = server_args.stream_interval
-        
+
         self.model_runner = ModelRunner(
             server_args=server_args,
             model_path=model_path,
@@ -111,14 +118,14 @@ class Scheduler:
 
         context = zmq.Context(2)
         if tp_rank == 0:
-            self.recv_from_engine = get_zmq_socket(
-                context, zmq.PULL, "ipc:///tmp/engine2scheduler", bind=False
+            self.recv_from_tokenizer = get_zmq_socket(
+                context, zmq.PULL, "ipc:///tmp/tokenizer2scheduler", bind=False
             )
-            self.send_to_engine = get_zmq_socket(
-                context, zmq.PUSH, "ipc:///tmp/scheduler2engine", bind=False
+            self.send_to_tokenizer = get_zmq_socket(
+                context, zmq.PUSH, "ipc:///tmp/scheduler2tokenizer", bind=False
             )
         else:
-            self.recv_from_engine = None
+            self.recv_from_tokenizer = None
 
         self.waiting_queue: List[Req] = []
         self.running_batch: Batch = Batch(reqs=[])
@@ -138,18 +145,21 @@ class Scheduler:
             self.last_batch = batch
 
     def recv_requests(self) -> List[Req]:
-        """Receive requests from the engine."""
+        """Receive requests from the engine. Only tp rank 0 will receive reqs from Engine by zmq. Other ranks should get reqs by broadcast"""
         if self.tp_rank == 0:
             recv_reqs = []
             while True:
                 try:
-                    recv_req = self.recv_from_engine.recv_pyobj(zmq.NOBLOCK)
+                    recv_req = self.recv_from_tokenizer.recv_pyobj(zmq.NOBLOCK)
                 except zmq.ZMQError:
                     break
                 recv_reqs.append(recv_req)
         else:
-            # TODO recv_reqs = ??
-            recv_reqs = []
+            recv_reqs = None
+
+        if self.tp_size != 1:
+            recv_reqs = broadcast_pyobj(recv_reqs, rank=self.tp_rank)
+
         return recv_reqs
 
     def process_input_requests(self, recv_reqs: List[Req]):
@@ -221,6 +231,24 @@ class Scheduler:
         )
 
     def process_batch_result(self, batch: Batch, result: GenerationBatchResult):
+        if batch.mode.is_prefill():
+            self.process_output_prefill(batch, result)
+        elif batch.mode.is_decode():
+            self.process_output_decode(batch, result)
+
+    def process_output_prefill(self, batch: Batch, result: GenerationBatchResult):
+        next_token_ids, bid = result.next_token_ids.to_list(), result.bid
+        for req, next_token_id in zip(batch.reqs, next_token_ids):
+            req.output_ids.append(next_token_id)
+            req.check_finished()
+            if req.finished():
+                self.tree_cache.cache_finished_req(req)
+            else:
+                self.tree_cache.cache_unfinished_req(req)
+
+        self.stream_output(batch.reqs)
+
+    def process_output_decode(self, batch: Batch, result: GenerationBatchResult):
         next_token_ids, bid = result.next_token_ids.to_list(), result.bid
         for req, next_token_id in zip(batch.reqs, next_token_ids):
             req.output_ids.append(next_token_id)
@@ -233,14 +261,26 @@ class Scheduler:
     def stream_output(self, reqs: List[Req]):
         rids = []
         finished_reasons = []
+
+        decode_ids_list = []
+        read_offsets = []
+
         for req in reqs:
             if req.finished() or len(req.output_ids % self.stream_interval == 0):
                 rids.append(req.rid)
                 finished_reasons.append(req.finished_reason)
+                decode_ids, read_offset = req.init_incremental_detokenize()
+                decode_ids_list.append(decode_ids)
+                read_offsets.append(read_offset)
 
         if rids:
-            self.send_to_engine.send_pyobj(
-                BatchTokenIDOut(rids=rids, finished_reasons=finished_reasons)
+            self.send_to_tokenizer.send_pyobj(
+                BatchTokenIDOut(
+                    rids=rids,
+                    finished_reasons=finished_reasons,
+                    decode_ids_list=decode_ids_list,
+                    read_offsets=read_offsets,
+                )
             )
 
 
