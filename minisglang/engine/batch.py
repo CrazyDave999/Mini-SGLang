@@ -6,6 +6,7 @@ from minisglang.memory.kvcache import KVCache
 from enum import Enum
 from minisglang.layers.sampler import SamplingParams
 
+INIT_INCREMENTAL_DETOKENIZATION_OFFSET = 5
 
 class Mode(Enum):
     PREFILL = "prefill"
@@ -34,6 +35,19 @@ class Req:
         self.page_table_id = None
 
         self.sampling_params: SamplingParams = sampling_params
+        
+        # For incremental decoding
+        # ----- | --------- read_ids -------|
+        # ----- |   surr_ids  |
+        # xxxxx | xxxxxxxxxxx | xxxxxxxxxxx |
+        # ----- ^ ----------- ^ ----------- ^
+        # ----- 1 ----------- 2 ----------- 3
+        # 1: surr_offset
+        # 2: read_offset
+        # 3: last token
+        self.surr_offset = None  # Surrounding offset to defeat the cleanup algorithm
+        self.read_offset = None
+        self.decoded_text = ""
 
         self.finished_reason = None
 
@@ -42,6 +56,17 @@ class Req:
 
     def init_next_round_input(self):
         self.fill_ids = self.origin_input_ids + self.output_ids
+        
+    def init_incremental_detokenize(self):
+        first_iter = self.surr_offset is None or self.read_offset is None
+        if first_iter:
+            self.read_offset = len(self.origin_input_ids)
+            self.surr_offset = max(
+                self.read_offset - INIT_INCREMENTAL_DETOKENIZATION_OFFSET, 0
+            )
+            
+        all_ids = self.origin_input_ids + self.output_ids
+        return all_ids[self.surr_offset :], self.read_offset - self.surr_offset
 
     def check_finished(self):
         if self.finished():
