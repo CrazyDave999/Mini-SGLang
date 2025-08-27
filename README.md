@@ -1,8 +1,13 @@
 # Mini-SGLang
 
+A simple version of sglang project. For study purpose.
+
 ## Roadmap
 
-- [x] Tensor parallemlism
+- [x] Tensor Parallemlism
 - [x] page size = 1 & page size > 1
-- [ ] Radix Cache
-- [ ] MoE support
+- [x] Radix Cache
+- [x] MoE support
+- [ ] cache-aware scheduling
+- [ ] server/generate api/stream output
+- [ ] unit tests
