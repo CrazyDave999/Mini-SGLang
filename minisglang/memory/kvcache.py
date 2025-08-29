@@ -5,7 +5,7 @@ import torch
 class KVCache:
     def __init__(
         self,
-        page_num: int,
+        size: int,
         page_size: int,
         head_num: int,
         head_dim: int,
@@ -13,7 +13,7 @@ class KVCache:
         layer_num: int,
         device: str,
     ):
-        self.page_num = page_num
+        self.page_num = size // page_size
         self.page_size = page_size
         self.head_num = head_num
         self.head_dim = head_dim
@@ -23,17 +23,17 @@ class KVCache:
 
         self.k_cache = [
             torch.zeros(
-                (page_num * page_size, head_num, head_dim), dtype=dtype, device=device
+                (self.page_num * page_size, head_num, head_dim), dtype=dtype, device=device
             )
             for _ in range(layer_num)
         ]
         self.v_cache = [
             torch.zeros(
-                (page_num * page_size, head_num, head_dim), dtype=dtype, device=device
+                (self.page_num * page_size, head_num, head_dim), dtype=dtype, device=device
             )
             for _ in range(layer_num)
         ]
-        self.free_pages = [i for i in range(page_num)]
+        self.free_pages = [i for i in range(self.page_num)]
 
     def allocate_pages_prefill(
         self,

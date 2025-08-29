@@ -98,7 +98,7 @@ def _launch_subprocesses(
     for tp_rank in range(server_args.tp_size):
         reader, writer = mp.Pipe(duplex=False)
         proc = mp.Process(
-            target=run_scheduler_process, args=(server_args.model_path, tp_rank, writer)
+            target=run_scheduler_process, args=(server_args, server_args.model_path, tp_rank, writer)
         )
         proc.start()
         scheduler_procs.append(proc)

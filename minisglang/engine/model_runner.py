@@ -1,10 +1,16 @@
+from typing import Optional
+from click import Option
 from minisglang.memory import page_manager
+from minisglang.utils import get_available_gpu_memory
 import torch
 from torch import nn
 import os
 from glob import glob
 from safetensors import safe_open
 import torch.distributed as dist
+
+import logging
+logger = logging.getLogger(__name__)
 
 from minisglang.engine.batch import Batch
 from minisglang.utils.model_config import ModelConfig
@@ -56,44 +62,127 @@ class ModelRunner:
         model_config: ModelConfig,
         tp_rank: int,
     ):
+        self.server_args = server_args
         self.tp_rank = tp_rank
         self.tp_size = server_args.tp_size
-        torch.cuda.set_device(self.tp_rank)
-        dist.init_process_group(
-            "nccl", "tcp://localhost:3300", world_size=self.tp_size, rank=self.tp_rank, device_id=torch.device("cuda", self.tp_rank)
-        )
-
-
         self.model_config = model_config
-
+        self.device = server_args.device
+        self.dtype = model_config.dtype
+        self.page_size = server_args.page_size
+        self.mem_fraction_static = server_args.mem_fraction_static
+        
+        torch.cuda.set_device(self.tp_rank)
         torch.set_default_device("cuda")
         torch.set_default_dtype(self.model_config.dtype)
+        
+        self.attn_backend = TorchNativeAttnBackend(self)
+        
+        # Get memory before model loading
+        min_per_gpu_memory = self.init_torch_distributed()
+        
+        # Load the model
         self.model = get_model(self.model_config)
         self.sampler = Sampler()
 
-        self.device = server_args.device
-        self.page_size = server_args.page_size
         # init memory
-        self.page_manager = PageManager(
-            page_size=server_args.page_size,
-            max_req_num=server_args.max_running_requests,
-            max_page_num=server_args.max_total_tokens // server_args.page_size,
-            device=self.device,
+        self.init_memory_pool(min_per_gpu_memory, server_args.max_running_requests, server_args.max_total_tokens)
+
+        
+    def init_torch_distributed(self):
+        logger.info("Init torch distributed begin.")
+        torch.get_device_module(self.device).set_device(self.tp_rank)
+
+        before_avail_memory = get_available_gpu_memory(self.device, self.tp_rank)
+        
+        dist.init_process_group(
+            "nccl", "tcp://localhost:3300", world_size=self.tp_size, rank=self.tp_rank, device_id=torch.device("cuda", self.tp_rank)
         )
-        self.kvcache = KVCache(
-            page_num=64,
-            page_size=server_args.page_size,
-            head_num=self.model_config.get_num_kv_heads_per_GPU(self.tp_size),
-            head_dim=self.model_config.head_dim,
-            dtype=self.model_config.dtype,
-            layer_num=self.model_config.num_hidden_layers,
+        
+        min_per_gpu_memory = get_available_gpu_memory(
+            self.device, self.tp_rank, distributed=self.tp_size > 1
+        )
+        local_gpu_memory = get_available_gpu_memory(self.device, self.tp_rank)
+        logger.info(
+            f"Init torch distributed ends. mem usage={(before_avail_memory - local_gpu_memory):.2f} GB"
+        )
+        return min_per_gpu_memory
+    
+    def init_memory_pool(
+        self,
+        total_gpu_memory: int,
+        max_num_reqs: Optional[int] = None,
+        max_total_tokens: Optional[int] = None,
+    ):
+        self.max_total_num_tokens = self.profile_max_num_token(total_gpu_memory)
+        if max_num_reqs is None:
+            max_num_reqs = min(
+                max(
+                    int(
+                        self.max_total_num_tokens / self.model_config.context_len * 512
+                    ),
+                    2048,
+                ),
+                4096,
+            )
+            
+        if max_total_tokens is not None:
+            if max_total_tokens > self.max_total_num_tokens:
+                logging.warning(
+                    f"max_total_tokens={max_total_tokens} is larger than the profiled value "
+                    f"{self.max_total_num_tokens}. "
+                    f"Use the profiled value instead."
+                )
+            self.max_total_num_tokens = min(self.max_total_num_tokens, max_total_tokens)
+            
+        
+        self.max_total_num_tokens = (
+            self.max_total_num_tokens
+            // self.server_args.page_size
+            * self.server_args.page_size
+        )
+        if self.max_total_num_tokens <= 0:
+            raise RuntimeError(
+                "Not enough memory. Please try to increase --mem-fraction-static."
+            )
+            
+        self.page_manager = PageManager(
+            page_size=self.page_size,
+            max_req_num=max_num_reqs,
+            max_context_len=self.model_config.context_len + 4,
             device=self.device,
         )
         
-
-
-        self.attn_backend = TorchNativeAttnBackend(self)
-
+        self.kvcache = KVCache(
+            size=self.max_total_num_tokens,
+            page_size=self.page_size,
+            head_num=self.model_config.get_num_kv_heads_per_GPU(self.tp_size),
+            head_dim=self.model_config.head_dim,
+            dtype=self.dtype,
+            layer_num=self.model_config.num_hidden_layers,
+            device=self.device,
+        )
+        logger.info(
+            f"Memory pool end. "
+            f"avail mem={get_available_gpu_memory(self.device, self.tp_rank):.2f} GB"
+        )
+    
+    def profile_max_num_token(self, total_gpu_memory: int):
+        available_gpu_memory = get_available_gpu_memory(
+            self.device, self.tp_rank, distributed=self.tp_size > 1
+        )
+        cell_size = (
+            self.model_config.get_num_kv_heads_per_GPU(self.tp_size)
+            * self.model_config.head_dim
+            * self.model_config.num_hidden_layers
+            * 2
+            * torch._utils._element_size(self.dtype)
+        )
+        rest_memory = available_gpu_memory - total_gpu_memory * (
+            1 - self.mem_fraction_static
+        )
+        max_num_token = int(rest_memory * (1 << 30) // cell_size)
+        return max_num_token
+    
     def forward(
         self,
         batch: Batch,

@@ -1,9 +1,13 @@
 import random
-from typing import List
+from typing import List, Optional
+from minisglang.utils.model_config import ModelConfig
 import zmq
 import torch
 from enum import Enum
 import torch.distributed as dist
+
+import logging
+logger = logging.getLogger(__name__)
 
 from minisglang.engine.model_runner import ModelRunner
 from minisglang.utils.ipc import get_zmq_socket
@@ -45,7 +49,7 @@ class SchedulePolicy:
         tree_cache: PagedRadixCache,
     ):
         self.tree_cache = tree_cache
-        self.policy_mode = SchedulePolicyMode(policy.upper())
+        self.policy_mode = SchedulePolicyMode(policy.lower())
 
     def calc_priority(self, waiting_queue: List[Req]):
         policy_mode = self.policy_mode
@@ -92,17 +96,18 @@ class Scheduler:
         model_path: str,
         tp_rank: int,
     ):
-
+        self.server_args = server_args
         self.tp_rank = tp_rank
         self.tp_size = server_args.tp_size
         self.max_running_requests = server_args.max_running_requests
         self.stream_interval = server_args.stream_interval
+        
+        self.model_config = ModelConfig(model_path)
 
         self.model_runner = ModelRunner(
             server_args=server_args,
-            model_path=model_path,
+            model_config=self.model_config,
             tp_rank=tp_rank,
-            device="cuda",
         )
         self.page_manager = self.model_runner.page_manager
         self.kvcache = self.model_runner.kvcache
@@ -129,6 +134,17 @@ class Scheduler:
 
         self.waiting_queue: List[Req] = []
         self.running_batch: Batch = Batch(reqs=[])
+        
+        self.cur_batch: Optional[Batch] = None
+        # The last forward batch
+        self.last_batch: Optional[Batch] = None
+        
+        # Print debug info
+        logger.info(
+            f"max_total_num_tokens={self.model_runner.max_total_num_tokens}, "
+            f"max_running_requests={self.server_args.max_running_requests}, "
+            f"context_len={self.model_config.context_len}"
+        )
 
     def loop(self):
         while True:
@@ -214,8 +230,9 @@ class Scheduler:
 
         new_batch = Batch(
             reqs=can_run_list, page_manager=self.page_manager, kvcache=self.kvcache
-        )
-        new_batch.prepare_for_prefill()
+        ) if can_run_list else None
+        if new_batch is not None:
+            new_batch.prepare_for_prefill()
 
         return new_batch
 
@@ -285,11 +302,12 @@ class Scheduler:
 
 
 def run_scheduler_process(
+    server_args: ServerArgs,
     model_path: str,
     tp_rank: int,
     pipe_writer,
 ):
-    scheduler = Scheduler(model_path, tp_rank)
+    scheduler = Scheduler(server_args, model_path, tp_rank)
     pipe_writer.send(
         {
             "status": "ready",

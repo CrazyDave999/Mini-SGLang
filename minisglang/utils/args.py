@@ -3,7 +3,7 @@ import argparse
 import dataclasses
 
 from dataclasses import dataclass
-from typing import List
+from typing import List, Optional
 
 
 
@@ -13,18 +13,28 @@ class ServerArgs:
     tokenizer_path: str = None
     device: str = "cuda"
     
+    # Port for the HTTP server
+    host: str = "127.0.0.1"
+    port: int = 30000
+    
     # Memory and scheduling
+    mem_fraction_static: float = 0.8
     max_running_requests: int = 8
     max_total_tokens: int = 1024 * 1024
+    schedule_policy: str = "fcfs"
     page_size: int = 1
     
+    # Other runtime options
     tp_size: int = 1
+    stream_interval: int = 1
     stream_output: bool = False
     
-    
+    # Logging
+    log_level: str = "info"
     
     @staticmethod
     def add_cli_args(parser: argparse.ArgumentParser):
+        # Model and port args
         parser.add_argument(
             "--model-path",
             type=str,
@@ -38,12 +48,25 @@ class ServerArgs:
             help="The path of the tokenizer.",
         )
         parser.add_argument(
+            "--host", type=str, default=ServerArgs.host, help="The host of the server."
+        )
+        parser.add_argument(
+            "--port", type=int, default=ServerArgs.port, help="The port of the server."
+        )
+        parser.add_argument(
             "--device",
             type=str,
             default=ServerArgs.device,
             help="The device to use ('cuda', 'xpu', 'hpu', 'cpu'). Defaults to auto-detection if not specified.",
         )
         
+        # Memory and scheduling
+        parser.add_argument(
+            "--mem-fraction-static",
+            type=float,
+            default=ServerArgs.mem_fraction_static,
+            help="The fraction of the memory used for static allocation (model weights and KV cache memory pool). Use a smaller value if you see out-of-memory errors.",
+        )
         parser.add_argument(
             "--max-running-requests",
             type=int,
@@ -58,12 +81,20 @@ class ServerArgs:
             "This option is typically used for development and debugging purposes.",
         )
         parser.add_argument(
+            "--schedule-policy",
+            type=str,
+            default=ServerArgs.schedule_policy,
+            choices=["lpm", "random", "fcfs", "dfs-weight"],
+            help="The scheduling policy of the requests.",
+        )
+        parser.add_argument(
             "--page-size",
             type=int,
             default=ServerArgs.page_size,
             help="The number of tokens in a page.",
         )
         
+        # Other runtime options
         parser.add_argument(
             "--tensor-parallel-size",
             "--tp-size",
@@ -72,9 +103,23 @@ class ServerArgs:
             help="The tensor parallelism size.",
         )
         parser.add_argument(
+            "--stream-interval",
+            type=int,
+            default=ServerArgs.stream_interval,
+            help="The interval (or buffer size) for streaming in terms of the token length. A smaller value makes streaming smoother, while a larger value makes the throughput higher",
+        )
+        parser.add_argument(
             "--stream-output",
             action="store_true",
             help="Whether to output as a sequence of disjoint segments.",
+        )
+        
+        # Logging
+        parser.add_argument(
+            "--log-level",
+            type=str,
+            default=ServerArgs.log_level,
+            help="The logging level of all loggers.",
         )
         
     @classmethod
@@ -83,6 +128,8 @@ class ServerArgs:
         attrs = [attr.name for attr in dataclasses.fields(cls)]
         return cls(**{attr: getattr(args, attr) for attr in attrs})
 
+    def url(self):
+        return f"http://{self.host}:{self.port}"
 
 def prepare_server_args(argv: List[str]) -> ServerArgs:
     """

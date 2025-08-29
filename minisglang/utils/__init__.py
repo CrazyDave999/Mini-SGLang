@@ -1,6 +1,12 @@
+import os
+import signal
 import sys
+import threading
 import traceback
 from typing import Any, Callable, List, Tuple, Type
+
+import psutil
+import torch
 
 
 def divide(numerator, denominator):
@@ -68,3 +74,71 @@ def get_exception_traceback():
     etype, value, tb = sys.exc_info()
     err_str = "".join(traceback.format_exception(etype, value, tb))
     return err_str
+
+
+def kill_process_tree(parent_pid, include_parent: bool = True, skip_pid: int = None):
+    """Kill the process and all its child processes."""
+    # Remove sigchld handler to avoid spammy logs.
+    if threading.current_thread() is threading.main_thread():
+        signal.signal(signal.SIGCHLD, signal.SIG_DFL)
+
+    if parent_pid is None:
+        parent_pid = os.getpid()
+        include_parent = False
+
+    try:
+        itself = psutil.Process(parent_pid)
+    except psutil.NoSuchProcess:
+        return
+
+    children = itself.children(recursive=True)
+    for child in children:
+        if child.pid == skip_pid:
+            continue
+        try:
+            child.kill()
+        except psutil.NoSuchProcess:
+            pass
+
+    if include_parent:
+        try:
+            if parent_pid == os.getpid():
+                itself.kill()
+                sys.exit(0)
+
+            itself.kill()
+
+            # Sometime processes cannot be killed with SIGKILL (e.g, PID=1 launched by kubernetes),
+            # so we send an additional signal to kill them.
+            itself.send_signal(signal.SIGQUIT)
+        except psutil.NoSuchProcess:
+            pass
+        
+
+def get_available_gpu_memory(device, gpu_id, distributed=False, empty_cache=True):
+    """
+    Get available memory for cuda:gpu_id device.
+    When distributed is True, the available memory is the minimum available memory of all GPUs.
+    """
+    if device == "cuda":
+        num_gpus = torch.cuda.device_count()
+        assert gpu_id < num_gpus
+
+        if torch.cuda.current_device() != gpu_id:
+            print(
+                f"WARNING: current device is not {gpu_id}, but {torch.cuda.current_device()}, ",
+                "which may cause useless memory allocation for torch CUDA context.",
+            )
+
+        if empty_cache:
+            torch.cuda.empty_cache()
+        free_gpu_memory, _ = torch.cuda.mem_get_info(gpu_id)
+
+    if distributed:
+        tensor = torch.tensor(free_gpu_memory, dtype=torch.float32).to(
+            torch.device(device, gpu_id)
+        )
+        torch.distributed.all_reduce(tensor, op=torch.distributed.ReduceOp.MIN)
+        free_gpu_memory = tensor.item()
+
+    return free_gpu_memory / (1 << 30)

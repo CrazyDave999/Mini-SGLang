@@ -114,12 +114,11 @@ class Batch:
         self,
         reqs: List[Req],
         page_manager=None,
-        kvcache: KVCache = None,
+        kvcache: KVCache=None,
     ):
         self.reqs = reqs
         self.page_manager = page_manager
         self.kvcache = kvcache
-        self.device = self.kvcache.device
 
     def is_empty(self):
         return len(self.reqs) == 0

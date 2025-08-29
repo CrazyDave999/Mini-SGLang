@@ -13,14 +13,14 @@ class PageManager:
         self,
         page_size: int,
         max_req_num: int,
-        max_page_num: int,
+        max_context_len: int,
         device: str,
     ):
         self.page_size = page_size
         self.max_req_num = max_req_num
-        self.max_page_num = max_page_num
+        self.max_page_num = max_context_len // page_size
         self.page_table = torch.zeros(
-            (max_req_num, max_page_num), dtype=torch.int32, device=device
+            (self.max_req_num, self.max_page_num), dtype=torch.int32, device=device
         )
         self.free_slots = [i for i in range(max_req_num)]
 

@@ -14,6 +14,9 @@ import time
 from http import HTTPStatus
 from typing import AsyncIterator, Callable, Optional
 
+from contextlib import asynccontextmanager
+
+
 # Fix a bug of Python threading
 setattr(threading, "_register_atexit", lambda *args, **kwargs: None)
 
@@ -30,17 +33,13 @@ from fastapi.responses import ORJSONResponse, Response, StreamingResponse
 from minisglang.engine.engine import _launch_subprocesses
 from minisglang.utils.io_struct import (
     GenerateReqInput,
-    ProfileReqInput,
-    SetInternalStateReq,
 )
 from minisglang.engine.tokenizer import TokenizerManager
 
 
 from minisglang.utils.args import ServerArgs
 from minisglang.utils import (
-    delete_directory,
     kill_process_tree,
-    set_uvicorn_logging_configs,
 )
 
 from minisglang.utils import get_exception_traceback
@@ -62,9 +61,15 @@ def set_global_state(global_state: _GlobalState):
     global _global_state
     _global_state = global_state
 
-
+@asynccontextmanager
+async def lifespan(fast_api_app: FastAPI):
+    warmup_thread = getattr(fast_api_app, "warmup_thread", None)
+    if warmup_thread is not None:
+        warmup_thread.start()
+    yield
+    
 # Fast API
-app = FastAPI()
+app = FastAPI(lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -105,10 +110,7 @@ async def get_server_info():
     }
 
 
-@app.api_route("/set_internal_state", methods=["POST", "PUT"])
-async def set_internal_state(obj: SetInternalStateReq):
-    res = await _global_state.tokenizer_manager.set_internal_state(obj)
-    return res
+
 
 
 # fastapi implicitly converts json in the request to obj (dataclass)
@@ -162,30 +164,6 @@ async def flush_cache():
     )
 
 
-@app.api_route("/start_profile", methods=["GET", "POST"])
-async def start_profile_async(obj: Optional[ProfileReqInput] = None):
-    """Start profiling."""
-    if obj is None:
-        obj = ProfileReqInput()
-
-    await _global_state.tokenizer_manager.start_profile(
-        obj.output_dir, obj.num_steps, obj.activities
-    )
-    return Response(
-        content="Start profiling.\n",
-        status_code=200,
-    )
-
-
-@app.api_route("/stop_profile", methods=["GET", "POST"])
-async def stop_profile_async():
-    """Stop profiling."""
-    _global_state.tokenizer_manager.stop_profile()
-    return Response(
-        content="Stop profiling. This will take some time.\n",
-        status_code=200,
-    )
-
 
 def _create_error_response(e):
     return ORJSONResponse(
@@ -219,15 +197,13 @@ def launch_server(
     app.warmup_thread = warmup_thread
 
     try:
-        # Update logging configs
-        set_uvicorn_logging_configs()
         app.server_args = server_args
         # Listen for HTTP requests
         uvicorn.run(
             app,
             host=server_args.host,
             port=server_args.port,
-            log_level=server_args.log_level_http or server_args.log_level,
+            log_level=server_args.log_level,
             timeout_keep_alive=5,
             loop="uvloop",
         )
@@ -242,8 +218,6 @@ def _wait_and_warmup(
 ):
     headers = {}
     url = server_args.url()
-    if server_args.api_key:
-        headers["Authorization"] = f"Bearer {server_args.api_key}"
 
     # Wait until the server is launched
     success = False
@@ -268,8 +242,8 @@ def _wait_and_warmup(
     model_info = res.json()
 
     # Send a warmup request
-    request_name = "/generate" if model_info["is_generation"] else "/encode"
-    max_new_tokens = 8 if model_info["is_generation"] else 1
+    request_name = "/generate"
+    max_new_tokens = 8
     json_data = {
         "sampling_params": {
             "temperature": 0,
@@ -279,16 +253,7 @@ def _wait_and_warmup(
     
     json_data["text"] = "The capital city of France is"
 
-    # Debug dumping
-    if server_args.debug_tensor_dump_input_file:
-        json_data.pop("text", None)
-        json_data["input_ids"] = np.load(
-            server_args.debug_tensor_dump_input_file
-        ).tolist()
-        json_data["sampling_params"]["max_new_tokens"] = 0
-
     try:
-        
         res = requests.post(
             url + request_name,
             json=json_data,
@@ -296,8 +261,6 @@ def _wait_and_warmup(
             timeout=600,
         )
         assert res.status_code == 200, f"{res}"
-        
-
     except Exception:
         last_traceback = get_exception_traceback()
         if pipe_finish_writer is not None:
@@ -307,14 +270,12 @@ def _wait_and_warmup(
         return
 
     # Debug print
-    # logger.info(f"{res.json()=}")
+    logger.info(f"{res.json()=}")
 
     logger.info("The server is fired up and ready to roll!")
     if pipe_finish_writer is not None:
         pipe_finish_writer.send("ready")
 
-    if server_args.delete_ckpt_after_loading:
-        delete_directory(server_args.model_path)
 
     if server_args.debug_tensor_dump_input_file:
         kill_process_tree(os.getpid())
