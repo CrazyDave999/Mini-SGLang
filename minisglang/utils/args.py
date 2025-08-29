@@ -3,6 +3,9 @@ import argparse
 import dataclasses
 
 from dataclasses import dataclass
+from typing import List
+
+
 
 @dataclass
 class ServerArgs:
@@ -79,3 +82,21 @@ class ServerArgs:
         args.tp_size = args.tensor_parallel_size
         attrs = [attr.name for attr in dataclasses.fields(cls)]
         return cls(**{attr: getattr(args, attr) for attr in attrs})
+
+
+def prepare_server_args(argv: List[str]) -> ServerArgs:
+    """
+    Prepare the server arguments from the command line arguments.
+
+    Args:
+        args: The command line arguments. Typically, it should be `sys.argv[1:]`
+            to ensure compatibility with `parse_args` when no arguments are passed.
+
+    Returns:
+        The server arguments.
+    """
+    parser = argparse.ArgumentParser()
+    ServerArgs.add_cli_args(parser)
+    raw_args = parser.parse_args(argv)
+    server_args = ServerArgs.from_cli_args(raw_args)
+    return server_args

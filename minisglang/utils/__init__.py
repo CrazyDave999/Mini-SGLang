@@ -1,3 +1,5 @@
+import sys
+import traceback
 from typing import Any, Callable, List, Tuple, Type
 
 
@@ -61,3 +63,8 @@ def find_printable_text(text: str):
     # which may change with the subsequent token -- there are probably smarter ways to do this!)
     else:
         return text[: text.rfind(" ") + 1]
+
+def get_exception_traceback():
+    etype, value, tb = sys.exc_info()
+    err_str = "".join(traceback.format_exception(etype, value, tb))
+    return err_str

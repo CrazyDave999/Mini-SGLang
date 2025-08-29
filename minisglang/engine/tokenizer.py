@@ -64,6 +64,8 @@ class TokenizerManager:
         server_args: ServerArgs,
     ):
         self.server_args = server_args
+        self.model_path = server_args.model_path
+        self.tokenizer_path = server_args.tokenizer_path
 
         
         context = zmq.asyncio.Context(2)
@@ -97,6 +99,14 @@ class TokenizerManager:
             obj, request, created_time
         ):
             yield response
+            
+    def get_internal_state(self):
+        # TODO
+        pass
+    
+    def flush_cache(self):
+        # TODO
+        pass
             
     def auto_create_handle_loop(self):
         if self.created_loop:
