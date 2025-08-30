@@ -1,12 +1,14 @@
 import random
 from typing import List, Optional
+from minisglang.utils import TypeBasedDispatcher
+from minisglang.utils.io_struct import FlushCacheReqInput, FlushCacheReqOutput, TokenizedGenerateReqInput
 from minisglang.utils.model_config import ModelConfig
 import zmq
 import torch
 from enum import Enum
-import torch.distributed as dist
 
 import logging
+
 logger = logging.getLogger(__name__)
 
 from minisglang.engine.model_runner import ModelRunner
@@ -101,13 +103,26 @@ class Scheduler:
         self.tp_size = server_args.tp_size
         self.max_running_requests = server_args.max_running_requests
         self.stream_interval = server_args.stream_interval
-        
+
         self.model_config = ModelConfig(model_path)
 
         self.model_runner = ModelRunner(
             server_args=server_args,
             model_config=self.model_config,
             tp_rank=tp_rank,
+        )
+        self.max_total_num_tokens = self.model_runner.max_total_num_tokens
+        self.max_running_requests = min(
+            (
+                self.max_total_num_tokens // 2
+                if server_args.max_running_requests is None
+                else server_args.max_running_requests
+            ),
+            self.model_runner.page_manager.max_req_num
+        )
+        self.max_req_len = min(
+            self.model_config.context_len - 1,
+            self.max_total_num_tokens - 1,
         )
         self.page_manager = self.model_runner.page_manager
         self.kvcache = self.model_runner.kvcache
@@ -134,11 +149,16 @@ class Scheduler:
 
         self.waiting_queue: List[Req] = []
         self.running_batch: Batch = Batch(reqs=[])
-        
+
         self.cur_batch: Optional[Batch] = None
         # The last forward batch
         self.last_batch: Optional[Batch] = None
-        
+
+        self._request_dispatcher = TypeBasedDispatcher(
+            (TokenizedGenerateReqInput, self.handle_generate_request)
+            (FlushCacheReqInput, self.flush_cache)
+        )
+
         # Print debug info
         logger.info(
             f"max_total_num_tokens={self.model_runner.max_total_num_tokens}, "
@@ -178,8 +198,31 @@ class Scheduler:
 
         return recv_reqs
 
-    def process_input_requests(self, recv_reqs: List[Req]):
-        self.waiting_queue.extend(recv_reqs)
+    def process_input_requests(self, recv_reqs: List):
+        for recv_req in recv_reqs:
+            output = self._request_dispatcher(recv_req)
+            if output is not None:
+                self.send_to_tokenizer.send_pyobj(output)
+
+    def handle_generate_request(
+        self,
+        recv_req: TokenizedGenerateReqInput,
+    ):
+        # Create a new request
+        req = Req(
+            rid=recv_req.rid,
+            origin_input_ids=recv_req.input_ids,
+            sampling_params=recv_req.sampling_params,
+        )
+        req.sampling_params.max_new_tokens = min(
+            (
+                req.sampling_params.max_new_tokens
+                if req.sampling_params.max_new_tokens is not None
+                else 1 << 30
+            ),
+            self.max_req_len - len(req.origin_input_ids) - 1,
+        )
+        self.waiting_queue.append(req)
 
     def get_next_batch_to_run(self) -> Batch:
         """Get the next batch to run."""
@@ -228,9 +271,13 @@ class Scheduler:
             req for req in self.waiting_queue if req not in set(can_run_list)
         ]
 
-        new_batch = Batch(
-            reqs=can_run_list, page_manager=self.page_manager, kvcache=self.kvcache
-        ) if can_run_list else None
+        new_batch = (
+            Batch(
+                reqs=can_run_list, page_manager=self.page_manager, kvcache=self.kvcache
+            )
+            if can_run_list
+            else None
+        )
         if new_batch is not None:
             new_batch.prepare_for_prefill()
 
@@ -246,6 +293,26 @@ class Scheduler:
             logits_output=logits_output,
             next_token_ids=next_token_ids,
         )
+
+    def flush_cache(self, _: FlushCacheReqInput) -> FlushCacheReqOutput:
+        if len(self.waiting_queue) == 0 and self.running_batch.is_empty():
+            self.cur_batch = None
+            self.last_batch = None
+            self.tree_cache.reset()
+            self.page_manager.clear()
+            self.kvcache.clear()
+
+            torch.cuda.empty_cache()
+            logger.info("Cache flushed successfully!")
+            is_succuss = True
+        else:
+            logging.warning(
+                f"Cache not flushed because there are pending requests. "
+                f"#queue-req: {len(self.waiting_queue)}, "
+                f"#running-req: {len(self.running_batch.reqs)}"
+            )
+            is_succuss = False
+        return FlushCacheReqOutput(is_success=is_succuss)
 
     def process_batch_result(self, batch: Batch, result: GenerationBatchResult):
         if batch.mode.is_prefill():

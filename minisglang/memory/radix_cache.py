@@ -255,22 +255,24 @@ class PagedRadixCache:
     def _match_prefix_helper(self, node: TreeNode, key: List) -> Tuple[List, TreeNode]:
         node.last_access_time = time.time()
         child_key = self.get_child_key_fn(key)
-        value = []
+        values = []
         while len(key) > 0 and child_key in node.children.keys():
             child = node.children[child_key]
             child.last_access_time = time.time()
             prefix_len = self.key_match_fn(child.key, key)
             if prefix_len < len(child.key):
-                # TODO
+                new_node = self._split_node(child.key, child, prefix_len)
+                values.append(new_node.value)
+                node = new_node
                 pass
             else:
-                value.append(child.value)
+                values.append(child.value)
                 node = child
                 key = key[prefix_len:]
                 if len(key):
                     child_key = self.get_child_key_fn(key)
 
-        return value, node
+        return values, node
 
     def _split_node(self, key, child: TreeNode, split_len: int):
         # new_node -> child
@@ -279,10 +281,10 @@ class PagedRadixCache:
         new_node.parent = child.parent
         new_node.lock_ref = child.lock_ref
         new_node.key = child.key[:split_len]
-        new_node.value = child.value[:split_len]
+        new_node.value = child.value[:split_len // self.page_size]
         child.parent = new_node
         child.key = child.key[split_len:]
-        child.value = child.value[split_len:]
+        child.value = child.value[split_len // self.page_size:]
         new_node.parent.children[self.get_child_key_fn(key)] = new_node
         return new_node
 

@@ -38,6 +38,9 @@ class PageManager:
     def free(self, page_table_ids: List[int]):
         """free req ids in the page table"""
         self.free_slots.extend(page_table_ids)
+        
+    def clear(self):
+        self.free_slots = list(range(self.max_req_num))
 
     def write_ppns_prefill(self, page_table_id: int, ppns: torch.Tensor):
         self.page_table[page_table_id, : ppns.size(0)] = ppns

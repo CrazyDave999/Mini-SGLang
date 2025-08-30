@@ -33,7 +33,7 @@ class KVCache:
             )
             for _ in range(layer_num)
         ]
-        self.free_pages = [i for i in range(self.page_num)]
+        self.clear()
 
     def allocate_pages_prefill(
         self,
@@ -83,3 +83,6 @@ class KVCache:
         layer_id: int,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         return self.k_cache[layer_id], self.v_cache[layer_id]
+    
+    def clear(self):
+        self.free_pages = list(range(self.page_num))

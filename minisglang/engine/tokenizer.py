@@ -19,9 +19,9 @@ import uvloop
 from minisglang.engine.batch import Req
 from minisglang.engine.scheduler import BatchTokenIDOut
 from minisglang.utils.args import ServerArgs
-from minisglang.utils.io_struct import BatchStrOut, GenerateReqInput, TokenizedGenerateReqInput
+from minisglang.utils.io_struct import BatchStrOut, FlushCacheReqInput, FlushCacheReqOutput, GenerateReqInput, TokenizedGenerateReqInput
 from minisglang.utils.ipc import get_zmq_socket
-from minisglang.utils import TypeBasedDispatcher, find_printable_text
+from minisglang.utils import _Communicator, TypeBasedDispatcher, find_printable_text
 
 asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
 
@@ -80,9 +80,15 @@ class TokenizerManager:
         self.created_loop: bool = False
         self.rid_to_state: Dict[str, ReqState] = {}
         
+        # Communicators
+        self.flush_cache_communicator = _Communicator(
+            self.send_to_scheduler, server_args.dp_size
+        )
+        
         self._result_dispatcher = TypeBasedDispatcher(
             [
                 (BatchTokenIDOut, self._handle_batch_token_id_out),
+                (FlushCacheReqOutput, self.flush_cache_communicator.handle_recv)
             ]
         )
     async def generate_request(
@@ -102,11 +108,10 @@ class TokenizerManager:
             
     def get_internal_state(self):
         # TODO
-        pass
+        return None
     
-    def flush_cache(self):
-        # TODO
-        pass
+    async def flush_cache(self) -> FlushCacheReqOutput:
+        return (await self.flush_cache_communicator(FlushCacheReqInput()))[0]
             
     def auto_create_handle_loop(self):
         if self.created_loop:

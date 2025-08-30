@@ -105,7 +105,6 @@ async def get_server_info():
     internal_states = await _global_state.tokenizer_manager.get_internal_state()
     return {
         **dataclasses.asdict(_global_state.tokenizer_manager.server_args),
-        **_global_state.scheduler_info,
         **internal_states,
     }
 

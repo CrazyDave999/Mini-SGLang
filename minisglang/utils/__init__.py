@@ -1,9 +1,11 @@
+import asyncio
+from collections import deque
 import os
 import signal
 import sys
 import threading
 import traceback
-from typing import Any, Callable, List, Tuple, Type
+from typing import Any, Callable, Generic, List, Tuple, Type, TypeVar, Deque, Optional
 
 import psutil
 import torch
@@ -142,3 +144,44 @@ def get_available_gpu_memory(device, gpu_id, distributed=False, empty_cache=True
         free_gpu_memory = tensor.item()
 
     return free_gpu_memory / (1 << 30)
+
+
+T = TypeVar("T")
+
+
+class _Communicator(Generic[T]):
+    """Note: The communicator now only run up to 1 in-flight request at any time."""
+
+    def __init__(self, sender, fan_out: int):
+        self._sender = sender
+        self._fan_out = fan_out
+        self._result_event: Optional[asyncio.Event] = None
+        self._result_values: Optional[List[T]] = None
+        self._ready_queue: Deque[asyncio.Future] = deque()
+
+    async def __call__(self, obj):
+        ready_event = asyncio.Event()
+        if self._result_event is not None or len(self._ready_queue) > 0:
+            self._ready_queue.append(ready_event)
+            await ready_event.wait()
+            assert self._result_event is None
+            assert self._result_values is None
+
+        if obj:
+            self._sender.send_pyobj(obj)
+
+        self._result_event = asyncio.Event()
+        self._result_values = []
+        await self._result_event.wait()
+        result_values = self._result_values
+        self._result_event = self._result_values = None
+
+        if len(self._ready_queue) > 0:
+            self._ready_queue.popleft().set()
+
+        return result_values
+
+    def handle_recv(self, recv_obj: T):
+        self._result_values.append(recv_obj)
+        if len(self._result_values) == self._fan_out:
+            self._result_event.set()

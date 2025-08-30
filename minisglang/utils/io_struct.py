@@ -45,3 +45,13 @@ class TokenizedGenerateReqInput:
     input_text: str
     # The input token ids
     input_ids: List[int]
+    
+
+@dataclass
+class FlushCacheReqInput:
+    pass
+
+
+@dataclass
+class FlushCacheReqOutput:
+    success: bool
