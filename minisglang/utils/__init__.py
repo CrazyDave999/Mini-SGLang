@@ -1,5 +1,6 @@
 import asyncio
-from collections import deque
+from collections import OrderedDict, deque
+import logging
 import os
 import signal
 import sys
@@ -145,6 +146,17 @@ def get_available_gpu_memory(device, gpu_id, distributed=False, empty_cache=True
 
     return free_gpu_memory / (1 << 30)
 
+class LimitedCapacityDict(OrderedDict):
+    def __init__(self, capacity: int, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.capacity = capacity
+
+    def __setitem__(self, key, value):
+        if len(self) >= self.capacity:
+            # Remove the oldest element (first item in the dict)
+            self.popitem(last=False)
+        # Set the new item
+        super().__setitem__(key, value)
 
 T = TypeVar("T")
 
@@ -185,3 +197,14 @@ class _Communicator(Generic[T]):
         self._result_values.append(recv_obj)
         if len(self._result_values) == self._fan_out:
             self._result_event.set()
+            
+            
+def configure_logger(server_args, prefix: str = ""):
+    format = f"[%(asctime)s{prefix}] %(message)s"
+    # format = f"[%(asctime)s.%(msecs)03d{prefix}] %(message)s"
+    logging.basicConfig(
+        level=getattr(logging, server_args.log_level.upper()),
+        format=format,
+        datefmt="%Y-%m-%d %H:%M:%S",
+        force=True,
+    )

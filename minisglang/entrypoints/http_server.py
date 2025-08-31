@@ -117,12 +117,13 @@ async def get_server_info():
 async def generate_request(obj: GenerateReqInput, request: Request):
     """Handle a generate request."""
     if obj.stream:
-
+        logger.info(f"{obj=}")
         async def stream_results() -> AsyncIterator[bytes]:
             try:
                 async for out in _global_state.tokenizer_manager.generate_request(
                     obj, request
                 ):
+                    logger.info(f"Streamed chunk: {out=}")
                     yield b"data: " + orjson.dumps(
                         out, option=orjson.OPT_NON_STR_KEYS
                     ) + b"\n\n"
@@ -237,8 +238,8 @@ def _wait_and_warmup(
         logger.error(f"Initialization failed. warmup error: {last_traceback}")
         kill_process_tree(os.getpid())
         return
-
-    model_info = res.json()
+    
+    logger.info(f"{res.json()=}")
 
     # Send a warmup request
     request_name = "/generate"
@@ -268,16 +269,11 @@ def _wait_and_warmup(
         kill_process_tree(os.getpid())
         return
 
-    # Debug print
-    logger.info(f"{res.json()=}")
 
     logger.info("The server is fired up and ready to roll!")
     if pipe_finish_writer is not None:
         pipe_finish_writer.send("ready")
 
-
-    if server_args.debug_tensor_dump_input_file:
-        kill_process_tree(os.getpid())
 
     if launch_callback is not None:
         launch_callback()

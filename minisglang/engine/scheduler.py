@@ -1,7 +1,12 @@
 import random
+from types import SimpleNamespace
 from typing import List, Optional
 from minisglang.utils import TypeBasedDispatcher
-from minisglang.utils.io_struct import FlushCacheReqInput, FlushCacheReqOutput, TokenizedGenerateReqInput
+from minisglang.utils.io_struct import (
+    FlushCacheReqInput,
+    FlushCacheReqOutput,
+    TokenizedGenerateReqInput,
+)
 from minisglang.utils.model_config import ModelConfig
 import zmq
 import torch
@@ -13,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 from minisglang.engine.model_runner import ModelRunner
 from minisglang.utils.ipc import get_zmq_socket
-from minisglang.engine.batch import Batch, Req
+from minisglang.engine.batch import BaseFinishReason, Batch, Req
 from dataclasses import dataclass
 
 from minisglang.utils.args import ServerArgs
@@ -31,10 +36,11 @@ class GenerationBatchResult:
 @dataclass
 class BatchTokenIDOut:
     rids: List[int]
-    finished_reasons: List[str]
+    finished_reasons: List[BaseFinishReason]
 
     # for incremental decoding
-    decode_ids_list: List[List[int]]
+    decoded_texts: List[str]
+    decode_ids: List[List[int]]
     read_offsets: List[int]
 
 
@@ -118,7 +124,7 @@ class Scheduler:
                 if server_args.max_running_requests is None
                 else server_args.max_running_requests
             ),
-            self.model_runner.page_manager.max_req_num
+            self.model_runner.page_manager.max_req_num,
         )
         self.max_req_len = min(
             self.model_config.context_len - 1,
@@ -146,6 +152,7 @@ class Scheduler:
             )
         else:
             self.recv_from_tokenizer = None
+            self.send_to_tokenizer = SimpleNamespace(send_pyobj=lambda x: None)
 
         self.waiting_queue: List[Req] = []
         self.running_batch: Batch = Batch(reqs=[])
@@ -155,8 +162,10 @@ class Scheduler:
         self.last_batch: Optional[Batch] = None
 
         self._request_dispatcher = TypeBasedDispatcher(
-            (TokenizedGenerateReqInput, self.handle_generate_request)
-            (FlushCacheReqInput, self.flush_cache)
+            [
+                (TokenizedGenerateReqInput, self.handle_generate_request),
+                (FlushCacheReqInput, self.flush_cache),
+            ]
         )
 
         # Print debug info
@@ -176,7 +185,7 @@ class Scheduler:
 
             if batch is not None:
                 result = self.run_batch(batch)
-                self.process_batch_result(result)
+                self.process_batch_result(batch, result)
 
             self.last_batch = batch
 
@@ -194,8 +203,12 @@ class Scheduler:
             recv_reqs = None
 
         if self.tp_size != 1:
-            recv_reqs = broadcast_pyobj(recv_reqs, rank=self.tp_rank)
+            recv_reqs = broadcast_pyobj(
+                recv_reqs, rank=self.tp_rank, dist_group=self.model_runner.tp_cpu_group
+            )
 
+        if len(recv_reqs) > 0:
+            logger.info(f"[TP {self.tp_rank}] Recv reqs: {recv_reqs}")
         return recv_reqs
 
     def process_input_requests(self, recv_reqs: List):
@@ -264,12 +277,17 @@ class Scheduler:
             if running_bs + len(can_run_list) >= self.max_running_requests:
                 break
             # TODO do some max token check
-            req.init_next_round_input()
+            req.init_next_round_input(
+                self.tree_cache,
+            )
             can_run_list.append(req)
 
         self.waiting_queue = [
             req for req in self.waiting_queue if req not in set(can_run_list)
         ]
+        
+        if len(can_run_list) > 0:
+            self.log_prefill_stats(can_run_list, running_bs)
 
         new_batch = (
             Batch(
@@ -283,11 +301,37 @@ class Scheduler:
 
         return new_batch
 
+    def log_prefill_stats(
+        self,
+        can_run_list: List[Req],
+        running_bs: int,
+    ):
+        num_new_seq = len(can_run_list)
+        f = (
+            f"Prefill batch. "
+            f"#new-seq: {num_new_seq}, "
+        )
+        f += f"#running-req: {running_bs}, "
+        f += f"#queue-req: {len(self.waiting_queue)}, "
+        logger.info(f"[TP {self.tp_rank}] {f}")
+        
+        
+    def log_decode_stats(
+        self, batch: Batch
+    ):
+        num_running_reqs = len(batch.reqs)
+        msg = f"Decode batch. #running-req: {num_running_reqs}"
+        msg += (
+            f"#queue-req: {len(self.waiting_queue)}, "
+        )
+        logger.info(f"[TP {self.tp_rank}] {msg}")
     # def update_running_batch(self, batch: Batch) -> Batch:
     #     """Update the current running decoding batch."""
 
     def run_batch(self, batch: Batch) -> GenerationBatchResult:
+        logger.info(f"[TP {self.tp_rank}] {batch.input_ids=}")
         logits_output, next_token_ids = self.model_runner.forward(batch)
+        batch.output_ids = next_token_ids
         return GenerationBatchResult(
             bid=batch.bid,
             logits_output=logits_output,
@@ -321,7 +365,7 @@ class Scheduler:
             self.process_output_decode(batch, result)
 
     def process_output_prefill(self, batch: Batch, result: GenerationBatchResult):
-        next_token_ids, bid = result.next_token_ids.to_list(), result.bid
+        next_token_ids, bid = result.next_token_ids.tolist(), result.bid
         for req, next_token_id in zip(batch.reqs, next_token_ids):
             req.output_ids.append(next_token_id)
             req.check_finished()
@@ -333,7 +377,8 @@ class Scheduler:
         self.stream_output(batch.reqs)
 
     def process_output_decode(self, batch: Batch, result: GenerationBatchResult):
-        next_token_ids, bid = result.next_token_ids.to_list(), result.bid
+        self.log_decode_stats(batch)
+        next_token_ids, bid = result.next_token_ids.tolist(), result.bid
         for req, next_token_id in zip(batch.reqs, next_token_ids):
             req.output_ids.append(next_token_id)
             req.check_finished()
@@ -346,14 +391,18 @@ class Scheduler:
         rids = []
         finished_reasons = []
 
+        decoded_texts = []
         decode_ids_list = []
         read_offsets = []
 
         for req in reqs:
-            if req.finished() or len(req.output_ids % self.stream_interval == 0):
+            if req.finished() or len(req.output_ids) % self.stream_interval == 0:
                 rids.append(req.rid)
-                finished_reasons.append(req.finished_reason)
+                finished_reasons.append(
+                    req.finished_reason.to_json() if req.finished_reason else None
+                )
                 decode_ids, read_offset = req.init_incremental_detokenize()
+                decoded_texts.append(req.decoded_text)
                 decode_ids_list.append(decode_ids)
                 read_offsets.append(read_offset)
 
@@ -362,7 +411,8 @@ class Scheduler:
                 BatchTokenIDOut(
                     rids=rids,
                     finished_reasons=finished_reasons,
-                    decode_ids_list=decode_ids_list,
+                    decoded_texts=decoded_texts,
+                    decode_ids=decode_ids_list,
                     read_offsets=read_offsets,
                 )
             )

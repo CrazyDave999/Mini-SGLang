@@ -79,6 +79,7 @@ class ModelRunner:
         
         # Get memory before model loading
         min_per_gpu_memory = self.init_torch_distributed()
+        self.tp_cpu_group = dist.new_group(ranks=[i for i in range(self.tp_size)], backend="gloo")
         
         # Load the model
         self.model = get_model(self.model_config)
@@ -190,6 +191,8 @@ class ModelRunner:
 
         self.attn_backend.init_forward_metadata(batch)
         batch.attn_backend = self.attn_backend
+        
+        logger.info(f"[TP {self.tp_rank}] Running batch: {batch.input_ids=} {batch.positions=}")
         logits_output = self.model.forward(batch.input_ids, batch.positions, batch)
 
         temperatures = torch.tensor([0.0] * len(batch.seq_lens), device=self.device)

@@ -57,14 +57,14 @@ def broadcast_pyobj(
     rank: int,
     dist_group: Optional[torch.distributed.ProcessGroup] = None,
     src: int = 0,
-    force_cpu_device: bool = False,
+    force_cpu_device: bool = True,
 ):
     """Broadcast inputs from rank=0 to all other ranks with torch.dist backend."""
     device = torch.device(
         "cuda" if torch.cuda.is_available() and not force_cpu_device else "cpu"
     )
 
-    if rank == 0:
+    if rank == src:
         if len(data) == 0:
             tensor_size = torch.tensor([0], dtype=torch.long, device=device)
             dist.broadcast(tensor_size, src=src, group=dist_group)

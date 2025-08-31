@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Optional, Union
 import dataclasses
 import torch
 
@@ -17,6 +17,66 @@ class Mode(Enum):
 
     def is_prefill(self):
         return self == Mode.PREFILL
+    
+
+class BaseFinishReason:
+    def __init__(self, is_error: bool = False):
+        self.is_error = is_error
+
+    def to_json(self):
+        raise NotImplementedError()
+
+
+class FINISH_MATCHED_TOKEN(BaseFinishReason):
+    def __init__(self, matched: Union[int, List[int]]):
+        super().__init__()
+        self.matched = matched
+
+    def to_json(self):
+        return {
+            "type": "stop",  # to match OpenAI API's return value
+            "matched": self.matched,
+        }
+
+
+class FINISH_MATCHED_STR(BaseFinishReason):
+    def __init__(self, matched: str):
+        super().__init__()
+        self.matched = matched
+
+    def to_json(self):
+        return {
+            "type": "stop",  # to match OpenAI API's return value
+            "matched": self.matched,
+        }
+
+
+class FINISH_LENGTH(BaseFinishReason):
+    def __init__(self, length: int):
+        super().__init__()
+        self.length = length
+
+    def to_json(self):
+        return {
+            "type": "length",  # to match OpenAI API's return value
+            "length": self.length,
+        }
+
+
+class FINISH_ABORT(BaseFinishReason):
+    def __init__(self, message="Unknown error", status_code=None, err_type=None):
+        super().__init__(is_error=True)
+        self.message = message
+        self.status_code = status_code
+        self.err_type = err_type
+
+    def to_json(self):
+        return {
+            "type": "abort",
+            "message": self.message,
+            "status_code": self.status_code,
+            "err_type": self.err_type,
+        }
 
 
 class Req:
@@ -48,14 +108,37 @@ class Req:
         self.surr_offset = None  # Surrounding offset to defeat the cleanup algorithm
         self.read_offset = None
         self.decoded_text = ""
+        
+        self.last_node = None
 
         self.finished_reason = None
 
     def finished(self):
         return self.finished_reason is not None
 
-    def init_next_round_input(self):
+    def init_next_round_input(
+        self,
+        tree_cache
+    ):
         self.fill_ids = self.origin_input_ids + self.output_ids
+        self.prefix_ppns, self.last_node = tree_cache.match_prefix(
+            key=self.adjust_max_prefix_ids()
+        )
+        
+    def adjust_max_prefix_ids(self):
+        self.fill_ids = self.origin_input_ids + self.output_ids
+        input_len = len(self.fill_ids)
+
+        # FIXME: To work around some bugs in logprob computation, we need to ensure each
+        # request has at least one token. Later, we can relax this requirement and use `input_len`.
+        max_prefix_len = input_len - 1
+
+        if self.sampling_params.max_new_tokens > 0:
+            # Need at least one token to compute logits
+            max_prefix_len = min(max_prefix_len, input_len - 1)
+            
+        max_prefix_len = max(max_prefix_len, 0)
+        return self.fill_ids[:max_prefix_len]
         
     def init_incremental_detokenize(self):
         first_iter = self.surr_offset is None or self.read_offset is None
@@ -73,7 +156,9 @@ class Req:
             return
 
         if len(self.output_ids) >= self.sampling_params.max_new_tokens:
-            self.finished_reason = "max_new_tokens"
+            self.finished_reason = FINISH_LENGTH(
+                length=self.sampling_params.max_new_tokens
+            )
             return
 
         last_token_id = self.output_ids[-1]
@@ -83,9 +168,11 @@ class Req:
             matched_eos = last_token_id in self.sampling_params.stop_token_ids
 
         if matched_eos:
-            self.finished_reason = "stop_token_ids"
+            self.finished_reason = FINISH_MATCHED_TOKEN(matched=last_token_id)
             return
 
+
+bid = 0
 
 @dataclasses.dataclass
 class Batch:
@@ -119,6 +206,9 @@ class Batch:
         self.reqs = reqs
         self.page_manager = page_manager
         self.kvcache = kvcache
+        global bid
+        bid += 1
+        self.bid = bid
 
     def is_empty(self):
         return len(self.reqs) == 0
@@ -239,6 +329,9 @@ class Batch:
         if len(keep_indices) == 0:
             self.reqs = []
             return
+        if len(keep_indices) == len(self.reqs):
+            # No need to filter
+            return
 
         self.reqs = [self.reqs[i] for i in keep_indices]
         self.page_table_ids = [self.page_table_ids[i] for i in keep_indices]
@@ -254,6 +347,7 @@ class Batch:
         )
         self.seq_lens = torch.cat([self.seq_lens, other.seq_lens])
         self.out_cache_loc = None
-        self.output_ids = torch.cat([self.output_ids, other.output_ids])
+        if self.output_ids is not None:
+            self.output_ids = torch.cat([self.output_ids, other.output_ids])
         self.reqs.extend(other.reqs)
         

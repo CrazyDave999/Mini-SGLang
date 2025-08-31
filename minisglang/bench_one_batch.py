@@ -68,7 +68,7 @@ from minisglang.engine.model_runner import ModelRunner
 
 from minisglang.layers.sampler import SamplingParams
 from minisglang.utils.args import ServerArgs
-from minisglang.utils.ipc import kill_process_tree
+from minisglang.utils import kill_process_tree
 @dataclasses.dataclass
 class BenchArgs:
     run_name: str = "default"

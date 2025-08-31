@@ -2,8 +2,9 @@ import dataclasses
 from dataclasses import dataclass
 
 from typing import Dict, List, Optional, Union
+import uuid
 
-from huggingface_hub import DocumentQuestionAnsweringParameters
+from minisglang.layers.sampler import SamplingParams
 
 
 @dataclasses.dataclass
@@ -30,6 +31,43 @@ class GenerateReqInput:
     
     stream: bool = False
     
+    def normalize_batch_and_args(self):
+        # determin batch size
+        if self.text is not None:
+            if isinstance(self.text, str):
+                self.is_single = True
+                self.batch_size = 1
+            else:
+                self.is_single = False
+                self.batch_size = len(self.text)
+        elif self.input_ids is not None:
+            if len(self.input_ids) == 0:
+                raise ValueError("input_ids cannot be empty.")
+            if isinstance(self.input_ids[0], int):
+                self.is_single = True
+                self.batch_size = 1
+            else:
+                self.is_single = False
+                self.batch_size = len(self.input_ids)
+        else:
+            raise
+        
+        if self.is_single:
+            if self.sampling_params is None:
+                self.sampling_params = {}
+            if self.rid is None:
+                self.rid = uuid.uuid4().hex
+        else:
+            if self.sampling_params is None:
+                self.sampling_params = [{}] * self.batch_size
+            elif isinstance(self.sampling_params, dict):
+                self.sampling_params = [self.sampling_params] * self.batch_size
+            elif not isinstance(self.sampling_params, list):
+                raise
+            if self.rid is None:
+                self.rid = [uuid.uuid4().hex for _ in range(self.batch_size)]
+            elif not isinstance(self.rid, list):
+                raise
     def __getitem__(self, i):
         return GenerateReqInput(
             text=self.text[i] if self.text is not None else None,
@@ -45,6 +83,8 @@ class TokenizedGenerateReqInput:
     input_text: str
     # The input token ids
     input_ids: List[int]
+    # The sampling parameters
+    sampling_params: SamplingParams
     
 
 @dataclass
