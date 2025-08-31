@@ -39,12 +39,15 @@ from minisglang.engine.tokenizer import TokenizerManager
 
 from minisglang.utils.args import ServerArgs
 from minisglang.utils import (
+    ModelCard,
+    ModelList,
     kill_process_tree,
 )
 
 from minisglang.utils import get_exception_traceback
 
 logger = logging.getLogger(__name__)
+
 asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
 
 
@@ -79,6 +82,15 @@ app.add_middleware(
 )
 
 HEALTH_CHECK_TIMEOUT = int(os.getenv("SGLANG_HEALTH_CHECK_TIMEOUT", 20))
+
+@app.get("/v1/models", response_class=ORJSONResponse)
+def available_models():
+    """Show available models."""
+    served_model_names = [_global_state.tokenizer_manager.model_path]
+    model_cards = []
+    for served_model_name in served_model_names:
+        model_cards.append(ModelCard(id=served_model_name, root=served_model_name))
+    return ModelList(data=model_cards)
 
 
 ##### Native API endpoints #####
@@ -136,7 +148,6 @@ async def generate_request(obj: GenerateReqInput, request: Request):
         return StreamingResponse(
             stream_results(),
             media_type="text/event-stream",
-            background=_global_state.tokenizer_manager.create_abort_task(obj),
         )
     else:
         try:

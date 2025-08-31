@@ -194,6 +194,7 @@ class ModelRunner:
         
         # logger.info(f"[TP {self.tp_rank}] Running batch: {batch.input_ids=} {batch.positions=}")
         logits_output = self.model.forward(batch.input_ids, batch.positions, batch)
+        # logger.info(f"[TP {self.tp_rank}] Model forward done. {logits_output=}")
 
         temperatures = torch.tensor([0.0] * len(batch.seq_lens), device=self.device)
         next_token_ids = self.sampler(logits=logits_output, temperatures=temperatures)

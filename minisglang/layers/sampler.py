@@ -9,6 +9,7 @@ class SamplingParams:
     max_new_tokens: int = 128
     stop_token_ids: Optional[List[int]] = None
     temperature: float = 0.0
+    ignore_eos: bool = False
 
 class Sampler(nn.Module):
 

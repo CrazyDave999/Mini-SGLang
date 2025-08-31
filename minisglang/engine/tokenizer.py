@@ -133,11 +133,11 @@ class TokenizerManager:
             self._send_one_request(obj, tokenized_obj, created_time)
             async for response in self._wait_one_response(obj, request):
                 yield response
-            else:
-                async for response in self._handle_batch_request(
-                    obj, request, created_time
-                ):
-                    yield response
+        else:
+            async for response in self._handle_batch_request(
+                obj, request, created_time
+            ):
+                yield response
 
     def get_internal_state(self):
         # TODO

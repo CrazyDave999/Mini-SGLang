@@ -6,11 +6,14 @@ import signal
 import socket
 import sys
 import threading
+import time
 import traceback
 from typing import Any, Callable, Generic, List, Tuple, Type, TypeVar, Deque, Optional
 
 import psutil
 import torch
+
+from pydantic import BaseModel, Field
 
 
 def divide(numerator, denominator):
@@ -202,12 +205,19 @@ class _Communicator(Generic[T]):
             
 def configure_logger(server_args, prefix: str = ""):
     format = f"[%(asctime)s{prefix}] %(message)s"
-    # format = f"[%(asctime)s.%(msecs)03d{prefix}] %(message)s"
+
+    LOG_DIR = "/workspace/Mini-SGLang/test/logs"
+    os.makedirs(LOG_DIR, exist_ok=True)
+    LOG_FILE = os.path.join(LOG_DIR, "server.log")
+    
     logging.basicConfig(
         level=getattr(logging, server_args.log_level.upper()),
         format=format,
         datefmt="%Y-%m-%d %H:%M:%S",
         force=True,
+        # handlers=[
+        #     logging.FileHandler(LOG_FILE, encoding="utf-8")
+        # ]
     )
 
 def is_port_available(port):
@@ -222,3 +232,20 @@ def is_port_available(port):
             return False
         except OverflowError:
             return False
+        
+        
+class ModelCard(BaseModel):
+    """Model cards."""
+
+    id: str
+    object: str = "model"
+    created: int = Field(default_factory=lambda: int(time.time()))
+    owned_by: str = "sglang"
+    root: Optional[str] = None
+
+
+class ModelList(BaseModel):
+    """Model list consists of model cards."""
+
+    object: str = "list"
+    data: List[ModelCard] = Field(default_factory=list)

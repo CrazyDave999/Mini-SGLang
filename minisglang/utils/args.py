@@ -57,6 +57,7 @@ class ServerArgs:
         parser.add_argument(
             "--port", type=int, default=ServerArgs.port, help="The port of the server."
         )
+
         parser.add_argument(
             "--device",
             type=str,

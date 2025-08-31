@@ -69,10 +69,13 @@ class GenerateReqInput:
             elif not isinstance(self.rid, list):
                 raise
     def __getitem__(self, i):
+        
         return GenerateReqInput(
             text=self.text[i] if self.text is not None else None,
             input_ids=self.input_ids[i] if self.input_ids is not None else None,
             rid=self.rid[i],
+            sampling_params=self.sampling_params[i] if self.sampling_params is not None else None, 
+            stream=self.stream
         )
         
 @dataclass

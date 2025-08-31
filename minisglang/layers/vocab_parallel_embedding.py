@@ -4,7 +4,8 @@ from typing import Optional, Tuple, Dict, Any
 import torch.distributed as dist
 from torch.nn import functional as F
 from minisglang.engine.batch import Batch
-
+import logging
+logger = logging.getLogger(__name__)
 
 class VocabParallelEmbedding(nn.Module):
     def __init__(self, num_embeddings: int, embedding_dim: int, dtype: torch.dtype):
@@ -60,7 +61,7 @@ class ParallelLMHead(VocabParallelEmbedding):
 
     def forward(self, x: torch.Tensor, batch: Batch):
         if batch.mode.is_prefill():
-            last_indices = batch.seq_lens - 1
+            last_indices = batch.seq_lens - batch.prefix_lens - 1
             x = x[last_indices].contiguous()
         logits = F.linear(x, self.weight)
         if self.tp_size > 1:

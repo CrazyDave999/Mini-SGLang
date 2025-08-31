@@ -197,7 +197,6 @@ class Scheduler:
             while True:
                 try:
                     recv_req = self.recv_from_tokenizer.recv_pyobj(zmq.NOBLOCK)
-                    logger.info(f"[TP {self.tp_rank}] Recv req: {recv_req=}")
                 except zmq.ZMQError:
                     break
                 recv_reqs.append(recv_req)
@@ -209,8 +208,8 @@ class Scheduler:
                 recv_reqs, rank=self.tp_rank, dist_group=self.model_runner.tp_cpu_group
             )
 
-        if len(recv_reqs) > 0:
-            logger.info(f"[TP {self.tp_rank}] Recv reqs: {recv_reqs}")
+        # if len(recv_reqs) > 0:
+        #     logger.info(f"[TP {self.tp_rank}] Recv reqs: {recv_reqs}")
         return recv_reqs
 
     def process_input_requests(self, recv_reqs: List):
@@ -357,7 +356,7 @@ class Scheduler:
                 f"#running-req: {len(self.running_batch.reqs)}"
             )
             is_succuss = False
-        return FlushCacheReqOutput(is_success=is_succuss)
+        return FlushCacheReqOutput(success=is_succuss)
 
     def process_batch_result(self, batch: Batch, result: GenerationBatchResult):
         if batch.mode.is_prefill():

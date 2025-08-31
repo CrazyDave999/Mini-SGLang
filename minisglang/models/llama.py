@@ -5,6 +5,9 @@ from typing import Any, Dict, Optional, Tuple
 from transformers import LlamaConfig
 import torch.distributed as dist
 
+import logging 
+logger = logging.getLogger(__name__)
+
 from minisglang.layers.attention import Attention
 from minisglang.layers.activation import SiluAndMul
 from minisglang.layers.linear import (
@@ -240,7 +243,7 @@ class LlamaModel(nn.Module):
         hidden_states = self.embed_tokens(input_ids)
         residual = None
 
-        for layer in self.layers:
+        for (i, layer) in enumerate(self.layers):
             hidden_states, residual = layer(positions, hidden_states, batch, residual)
 
         hidden_states, _ = self.norm(hidden_states, residual)

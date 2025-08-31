@@ -1,6 +1,8 @@
 from typing import List, Optional, Union
 import dataclasses
 import torch
+import logging
+logger = logging.getLogger(__name__)
 
 from minisglang.memory.kvcache import KVCache
 from enum import Enum
@@ -124,6 +126,7 @@ class Req:
         self.prefix_ppns, self.last_node = tree_cache.match_prefix(
             key=self.adjust_max_prefix_ids()
         )
+        logger.info(f"init_next_round_input Req {self.rid=} {self.fill_ids=} {self.prefix_ppns=}")
         
     def adjust_max_prefix_ids(self):
         self.fill_ids = self.origin_input_ids + self.output_ids
@@ -264,11 +267,7 @@ class Batch:
                 device=self.device,
             )
             # write ppns to page table (prefix & newly allocated pages)
-            prefix_ppns = torch.tensor(
-                req.prefix_ppns,
-                device=self.device,
-            )
-            ppns = torch.cat((prefix_ppns, new_pages))
+            ppns = torch.cat((req.prefix_ppns, new_pages))
             self.page_manager.write_ppns_prefill(req.page_table_id, ppns)
 
         # set fields
