@@ -21,7 +21,7 @@ from minisglang.utils.ipc import get_zmq_socket
 from minisglang.engine.batch import BaseFinishReason, Batch, Req
 from dataclasses import dataclass
 
-from minisglang.utils.args import ServerArgs
+from minisglang.utils.args import PortArgs, ServerArgs
 from minisglang.memory.radix_cache import PagedRadixCache
 from minisglang.utils.ipc import broadcast_pyobj
 
@@ -101,6 +101,7 @@ class Scheduler:
     def __init__(
         self,
         server_args: ServerArgs,
+        port_args: PortArgs,
         model_path: str,
         tp_rank: int,
     ):
@@ -145,10 +146,10 @@ class Scheduler:
         context = zmq.Context(2)
         if tp_rank == 0:
             self.recv_from_tokenizer = get_zmq_socket(
-                context, zmq.PULL, "ipc:///tmp/tokenizer2scheduler", bind=False
+                context, zmq.PULL, port_args.scheduler_input_ipc_name, bind=False
             )
             self.send_to_tokenizer = get_zmq_socket(
-                context, zmq.PUSH, "ipc:///tmp/scheduler2tokenizer", bind=False
+                context, zmq.PUSH, port_args.tokenizer_ipc_name, bind=False
             )
         else:
             self.recv_from_tokenizer = None
@@ -196,6 +197,7 @@ class Scheduler:
             while True:
                 try:
                     recv_req = self.recv_from_tokenizer.recv_pyobj(zmq.NOBLOCK)
+                    logger.info(f"[TP {self.tp_rank}] Recv req: {recv_req=}")
                 except zmq.ZMQError:
                     break
                 recv_reqs.append(recv_req)
@@ -329,7 +331,6 @@ class Scheduler:
     #     """Update the current running decoding batch."""
 
     def run_batch(self, batch: Batch) -> GenerationBatchResult:
-        logger.info(f"[TP {self.tp_rank}] {batch.input_ids=}")
         logits_output, next_token_ids = self.model_runner.forward(batch)
         batch.output_ids = next_token_ids
         return GenerationBatchResult(
@@ -420,11 +421,12 @@ class Scheduler:
 
 def run_scheduler_process(
     server_args: ServerArgs,
+    port_args: PortArgs,
     model_path: str,
     tp_rank: int,
     pipe_writer,
 ):
-    scheduler = Scheduler(server_args, model_path, tp_rank)
+    scheduler = Scheduler(server_args, port_args, model_path, tp_rank)
     pipe_writer.send(
         {
             "status": "ready",

@@ -3,13 +3,15 @@ from typing import List, Optional, Union, Dict
 import zmq
 import multiprocessing as mp
 
+import logging
+
+logger = logging.getLogger(__name__)
 
 from minisglang.engine.tokenizer import TokenizerManager
-from minisglang.utils.args import ServerArgs
+from minisglang.utils.args import PortArgs, ServerArgs
 from minisglang.utils.io_struct import GenerateReqInput
 from minisglang.utils.ipc import get_zmq_socket
 from minisglang.engine.scheduler import run_scheduler_process
-
 
 
 class Engine:
@@ -26,7 +28,6 @@ class Engine:
         self.server_args = server_args
         self.tokenizer_manager = tokenizer_manager
 
-
     def generate(
         self,
         prompt: Optional[Union[List[str], str]] = None,
@@ -39,11 +40,11 @@ class Engine:
             text=prompt,
             input_ids=input_ids,
             sampling_params=sampling_params,
-            stream=stream
+            stream=stream,
         )
         loop = asyncio.get_event_loop()
         generator = self.tokenizer_manager.generate_request(obj, None)
-        
+
         if stream:
 
             def generator_wrapper():
@@ -58,9 +59,7 @@ class Engine:
         else:
             ret = loop.run_until_complete(generator.__anext__())
             return ret
-            
-                
-                
+
     async def async_generate(
         self,
         # The input prompt. It can be a single prompt or a batch of prompts.
@@ -78,7 +77,7 @@ class Engine:
             text=prompt,
             input_ids=input_ids,
             sampling_params=sampling_params,
-            stream=stream
+            stream=stream,
         )
         generator = self.tokenizer_manager.generate_request(obj, None)
         if stream is True:
@@ -87,18 +86,20 @@ class Engine:
             return await generator.__anext__()
 
 
-    
-def _launch_subprocesses(
-    server_args: ServerArgs
-) -> TokenizerManager:
-    
+def _launch_subprocesses(server_args: ServerArgs) -> TokenizerManager:
+
+    # Allocate ports for inter-process communications
+    port_args = PortArgs.init_new(server_args)
+    logger.info(f"{port_args=}")
+
     # run the scheduler subprocesses
     scheduler_procs = []
     scheduler_pipe_readers = []
     for tp_rank in range(server_args.tp_size):
         reader, writer = mp.Pipe(duplex=False)
         proc = mp.Process(
-            target=run_scheduler_process, args=(server_args, server_args.model_path, tp_rank, writer)
+            target=run_scheduler_process,
+            args=(server_args, port_args, server_args.model_path, tp_rank, writer),
         )
         proc.start()
         scheduler_procs.append(proc)
@@ -112,8 +113,8 @@ def _launch_subprocesses(
 
         if data["status"] != "ready":
             raise RuntimeError("Scheduler initialization failed")
-        
+
     # Launch tokenizer manager process in the main process
-    tokenizer_manager = TokenizerManager(server_args)
-    
+    tokenizer_manager = TokenizerManager(server_args, port_args)
+
     return tokenizer_manager

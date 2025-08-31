@@ -117,13 +117,11 @@ async def get_server_info():
 async def generate_request(obj: GenerateReqInput, request: Request):
     """Handle a generate request."""
     if obj.stream:
-        logger.info(f"{obj=}")
         async def stream_results() -> AsyncIterator[bytes]:
             try:
                 async for out in _global_state.tokenizer_manager.generate_request(
                     obj, request
                 ):
-                    logger.info(f"Streamed chunk: {out=}")
                     yield b"data: " + orjson.dumps(
                         out, option=orjson.OPT_NON_STR_KEYS
                     ) + b"\n\n"
@@ -252,6 +250,7 @@ def _wait_and_warmup(
     }
     
     json_data["text"] = "The capital city of France is"
+    # json_data acts like a GenerateReqInput
 
     try:
         res = requests.post(

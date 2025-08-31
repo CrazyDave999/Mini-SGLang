@@ -20,7 +20,7 @@ import uvloop
 
 from minisglang.engine.batch import Req
 from minisglang.engine.scheduler import BatchTokenIDOut
-from minisglang.utils.args import ServerArgs
+from minisglang.utils.args import PortArgs, ServerArgs
 from minisglang.utils.io_struct import (
     BatchStrOut,
     FlushCacheReqInput,
@@ -79,8 +79,10 @@ class TokenizerManager:
     def __init__(
         self,
         server_args: ServerArgs,
+        port_args: PortArgs
     ):
         self.server_args = server_args
+        self.port_args = port_args
         self.model_path = server_args.model_path
         self.tokenizer_path = server_args.tokenizer_path
         
@@ -91,10 +93,10 @@ class TokenizerManager:
 
         context = zmq.asyncio.Context(2)
         self.send_to_scheduler = get_zmq_socket(
-            context, zmq.PUSH, "ipc:///tmp/tokenizer2scheduler", bind=True
+            context, zmq.PUSH, self.port_args.scheduler_input_ipc_name, bind=True
         )
         self.recv_from_scheduler = get_zmq_socket(
-            context, zmq.PULL, "ipc:///tmp/scheduler2tokenizer", bind=True
+            context, zmq.PULL, self.port_args.tokenizer_ipc_name, bind=True
         )
         self.tokenizer = AutoTokenizer.from_pretrained(server_args.tokenizer_path)
 
@@ -127,15 +129,14 @@ class TokenizerManager:
         is_single = obj.is_single
         if is_single:
             tokenized_obj = await self._tokenize_one_request(obj)
+            # logger.info(f"Sending tokenized request to scheduler: {tokenized_obj=}")
             self._send_one_request(obj, tokenized_obj, created_time)
             async for response in self._wait_one_response(obj, request):
-                logger.info(f"Response: {response=}")
                 yield response
             else:
                 async for response in self._handle_batch_request(
                     obj, request, created_time
                 ):
-                    logger.info(f"Response: {response=}")
                     yield response
 
     def get_internal_state(self):
@@ -173,6 +174,7 @@ class TokenizerManager:
             created_time=created_time,
         )
         self.rid_to_state[obj.rid] = state
+        logger.info(f"Sending tokenized request to scheduler: {tokenized_obj=}")
         self.send_to_scheduler.send_pyobj(tokenized_obj)
 
     async def _wait_one_response(

@@ -3,7 +3,11 @@ import argparse
 import dataclasses
 
 from dataclasses import dataclass
+import random
+import tempfile
 from typing import List, Optional
+
+from minisglang.utils import is_port_available
 
 
 
@@ -147,3 +151,41 @@ def prepare_server_args(argv: List[str]) -> ServerArgs:
     raw_args = parser.parse_args(argv)
     server_args = ServerArgs.from_cli_args(raw_args)
     return server_args
+
+
+
+
+ZMQ_TCP_PORT_DELTA = 233
+
+
+@dataclasses.dataclass
+class PortArgs:
+    # The ipc filename for tokenizer to receive inputs from detokenizer (zmq)
+    tokenizer_ipc_name: str
+    # The ipc filename for scheduler (rank 0) to receive inputs from tokenizer (zmq)
+    scheduler_input_ipc_name: str
+    # The ipc filename for detokenizer to receive inputs from scheduler (zmq)
+    detokenizer_ipc_name: str
+
+    # The port for nccl initialization (torch.dist)
+    nccl_port: int
+
+    @staticmethod
+    def init_new(server_args) -> "PortArgs":
+        port = server_args.port + random.randint(100, 1000)
+        while True:
+            if is_port_available(port):
+                break
+            if port < 60000:
+                port += 42
+            else:
+                port -= 43
+
+        # Normal case, use IPC within a single node
+        return PortArgs(
+            tokenizer_ipc_name=f"ipc://{tempfile.NamedTemporaryFile(delete=False).name}",
+            scheduler_input_ipc_name=f"ipc://{tempfile.NamedTemporaryFile(delete=False).name}",
+            detokenizer_ipc_name=f"ipc://{tempfile.NamedTemporaryFile(delete=False).name}",
+            nccl_port=port,
+        )
+        

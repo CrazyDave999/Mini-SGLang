@@ -96,7 +96,7 @@ class ModelRunner:
         before_avail_memory = get_available_gpu_memory(self.device, self.tp_rank)
         
         dist.init_process_group(
-            "nccl", "tcp://localhost:3300", world_size=self.tp_size, rank=self.tp_rank, device_id=torch.device("cuda", self.tp_rank)
+            "nccl", "tcp://localhost:33000", world_size=self.tp_size, rank=self.tp_rank, device_id=torch.device("cuda", self.tp_rank)
         )
         
         min_per_gpu_memory = get_available_gpu_memory(
@@ -192,7 +192,7 @@ class ModelRunner:
         self.attn_backend.init_forward_metadata(batch)
         batch.attn_backend = self.attn_backend
         
-        logger.info(f"[TP {self.tp_rank}] Running batch: {batch.input_ids=} {batch.positions=}")
+        # logger.info(f"[TP {self.tp_rank}] Running batch: {batch.input_ids=} {batch.positions=}")
         logits_output = self.model.forward(batch.input_ids, batch.positions, batch)
 
         temperatures = torch.tensor([0.0] * len(batch.seq_lens), device=self.device)
