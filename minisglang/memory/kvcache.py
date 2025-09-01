@@ -86,3 +86,6 @@ class KVCache:
     
     def clear(self):
         self.free_pages = list(range(self.page_num))
+        
+    def available_page_num(self):
+        return len(self.free_pages)

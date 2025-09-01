@@ -21,7 +21,7 @@ from minisglang.utils.ipc import get_zmq_socket
 from minisglang.engine.batch import BaseFinishReason, Batch, Req
 from dataclasses import dataclass
 
-from minisglang.utils.args import PortArgs, ServerArgs
+from minisglang.utils.args import PortArgs, ServerArgs, global_config
 from minisglang.memory.radix_cache import PagedRadixCache
 from minisglang.utils.ipc import broadcast_pyobj
 
@@ -105,6 +105,7 @@ class Scheduler:
         model_path: str,
         tp_rank: int,
     ):
+        # states
         self.server_args = server_args
         self.tp_rank = tp_rank
         self.tp_size = server_args.tp_size
@@ -113,6 +114,7 @@ class Scheduler:
 
         self.model_config = ModelConfig(model_path)
 
+        # memory pool
         self.model_runner = ModelRunner(
             server_args=server_args,
             model_config=self.model_config,
@@ -155,12 +157,28 @@ class Scheduler:
             self.recv_from_tokenizer = None
             self.send_to_tokenizer = SimpleNamespace(send_pyobj=lambda x: None)
 
+        # running status
         self.waiting_queue: List[Req] = []
         self.running_batch: Batch = Batch(reqs=[])
 
         self.cur_batch: Optional[Batch] = None
         # The last forward batch
         self.last_batch: Optional[Batch] = None
+        
+        # token estimation
+        assert server_args.schedule_conservativeness >= 0
+        self.init_new_token_ratio = min(
+            global_config.default_init_new_token_ratio * server_args.schedule_conservativeness,
+            1.0
+        )
+        self.min_new_token_ratio = min(
+            global_config.default_min_new_token_ratio_factor * server_args.schedule_conservativeness,
+            1.0
+        )
+        self.new_token_ratio_decay = (
+            self.init_new_token_ratio - self.min_new_token_ratio
+        ) / global_config.default_new_token_ratio_decay_steps
+        self.new_token_ratio = self.init_new_token_ratio
 
         self._request_dispatcher = TypeBasedDispatcher(
             [
@@ -254,14 +272,10 @@ class Scheduler:
         if new_batch is not None:
             # Run prefill first if possible
             return new_batch
-        else:
-            # Run decode batch
-            if not self.running_batch.is_empty():
-                self.running_batch.filter_batch()
-                # TODO check if decode out of memory
-                self.running_batch.prepare_for_decode()
-                return self.running_batch
-
+        elif not self.running_batch.is_empty():
+            # Run decode
+            self.running_batch = self.update_running_batch(self.running_batch)
+            return self.running_batch if not self.running_batch.is_empty() else None
         return None
 
     def get_new_batch_prefill(self) -> Batch:
@@ -326,8 +340,42 @@ class Scheduler:
             f"#queue-req: {len(self.waiting_queue)}, "
         )
         logger.info(f"[TP {self.tp_rank}] {msg}")
-    # def update_running_batch(self, batch: Batch) -> Batch:
-    #     """Update the current running decoding batch."""
+        
+    def update_running_batch(self, batch: Batch) -> Batch:
+        """Update the current running decoding batch."""
+        # init_bs = batch.batch_size()
+        
+        batch.filter_batch()
+        if batch.is_empty():
+            return batch
+
+        # Check if decode out of memory
+        if not batch.check_decode_mem():
+            old_ratio = self.new_token_ratio
+            
+            retracted_reqs, new_token_ratio = batch.retract_decode()
+            num_retracted_reqs = len(retracted_reqs)
+            self.new_token_ratio = new_token_ratio
+            
+            logger.info(
+                "KV cache pool is full. Retract requests. "
+                f"#retracted_reqs: {num_retracted_reqs}, "
+                f"#new_token_ratio: {old_ratio:.4f} -> {self.new_token_ratio:.4f}"
+            )
+            
+            # extend retracted requests to queue
+            self.waiting_queue.extend(retracted_reqs)
+        else:
+            self.new_token_ratio = max(
+                self.new_token_ratio - self.new_token_ratio_decay,
+                self.min_new_token_ratio,
+            )
+        
+        # Update batch tensors
+        batch.prepare_for_decode()
+        return batch
+            
+            
 
     def run_batch(self, batch: Batch) -> GenerationBatchResult:
         logits_output, next_token_ids = self.model_runner.forward(batch)

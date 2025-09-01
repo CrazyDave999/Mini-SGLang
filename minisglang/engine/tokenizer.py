@@ -174,7 +174,6 @@ class TokenizerManager:
             created_time=created_time,
         )
         self.rid_to_state[obj.rid] = state
-        logger.info(f"Sending tokenized request to scheduler: {tokenized_obj=}")
         self.send_to_scheduler.send_pyobj(tokenized_obj)
 
     async def _wait_one_response(

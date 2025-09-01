@@ -199,12 +199,12 @@ class PagedRadixCache:
     def total_size(self):
         return self._total_size_helper()
 
-    def evict(self, num_tokens: int):
+    def evict(self, num_pages: int):
         leaves: List[TreeNode] = self._collect_leaves()
         heapq.heapify(leaves)
 
         num_evicted = 0
-        while num_evicted < num_tokens and len(leaves) > 0:
+        while num_evicted < num_pages and len(leaves) > 0:
             x = heapq.heappop(leaves)
 
             if x == self.root_node:
@@ -213,10 +213,10 @@ class PagedRadixCache:
                 continue
 
             if self.kvcache is not None:
-                self.kvcache._free_pages([x.value])
+                self.kvcache._free_pages(x.value)
             self._delete_leaf(x)
 
-            num_evicted += len(x.value) * self.page_size
+            num_evicted += len(x.value)
             if len(x.parent.children) == 0:
                 heapq.heappush(leaves, x.parent)
 
