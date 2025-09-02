@@ -1,6 +1,7 @@
 import dataclasses
 from dataclasses import dataclass
 
+from enum import Enum
 from typing import Dict, List, Optional, Union
 import uuid
 
@@ -98,3 +99,35 @@ class FlushCacheReqInput:
 @dataclass
 class FlushCacheReqOutput:
     success: bool
+    
+@dataclass
+class ProfileReqInput:
+    # The output directory
+    output_dir: Optional[str] = None
+    # If set, it profile as many as this number of steps.
+    # If it is set, profiling is automatically stopped after this step, and
+    # the caller doesn't need to run stop_profile.
+    start_step: Optional[int] = None
+    num_steps: Optional[int] = None
+    activities: Optional[List[str]] = None
+    profile_by_stage: bool = False
+    with_stack: Optional[bool] = None
+    record_shapes: Optional[bool] = None
+
+
+class ProfileReqType(Enum):
+    START_PROFILE = 1
+    STOP_PROFILE = 2
+
+
+@dataclass
+class ProfileReq:
+    type: ProfileReqType
+    output_dir: Optional[str] = None
+    start_step: Optional[int] = None
+    num_steps: Optional[int] = None
+    activities: Optional[List[str]] = None
+    profile_by_stage: bool = False
+    with_stack: Optional[bool] = None
+    record_shapes: Optional[bool] = None
+    profile_id: Optional[str] = None

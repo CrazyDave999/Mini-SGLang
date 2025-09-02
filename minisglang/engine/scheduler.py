@@ -5,6 +5,8 @@ from minisglang.utils import TypeBasedDispatcher
 from minisglang.utils.io_struct import (
     FlushCacheReqInput,
     FlushCacheReqOutput,
+    ProfileReq,
+    ProfileReqType,
     TokenizedGenerateReqInput,
 )
 from minisglang.utils.model_config import ModelConfig
@@ -184,6 +186,7 @@ class Scheduler:
             [
                 (TokenizedGenerateReqInput, self.handle_generate_request),
                 (FlushCacheReqInput, self.flush_cache),
+                (ProfileReq, self.profile),
             ]
         )
 
@@ -405,6 +408,12 @@ class Scheduler:
             )
             is_succuss = False
         return FlushCacheReqOutput(success=is_succuss)
+    
+    
+    
+    def profile(self, recv_req: ProfileReq):
+        # TODO
+        pass
 
     def process_batch_result(self, batch: Batch, result: GenerationBatchResult):
         if batch.mode.is_prefill():

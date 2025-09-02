@@ -33,6 +33,7 @@ from fastapi.responses import ORJSONResponse, Response, StreamingResponse
 from minisglang.engine.engine import _launch_subprocesses
 from minisglang.utils.io_struct import (
     GenerateReqInput,
+    ProfileReqInput,
 )
 from minisglang.engine.tokenizer import TokenizerManager
 
@@ -172,6 +173,36 @@ async def flush_cache():
         status_code=200 if ret.success else HTTPStatus.BAD_REQUEST,
     )
 
+
+@app.api_route("/start_profile", methods=["GET", "POST"])
+async def start_profile_async(obj: Optional[ProfileReqInput] = None):
+    """Start profiling."""
+    if obj is None:
+        obj = ProfileReqInput()
+
+    await _global_state.tokenizer_manager.start_profile(
+        output_dir=obj.output_dir,
+        start_step=obj.start_step,
+        num_steps=obj.num_steps,
+        activities=obj.activities,
+        with_stack=obj.with_stack,
+        record_shapes=obj.record_shapes,
+        profile_by_stage=obj.profile_by_stage,
+    )
+    return Response(
+        content="Start profiling.\n",
+        status_code=200,
+    )
+
+
+@app.api_route("/stop_profile", methods=["GET", "POST"])
+async def stop_profile_async():
+    """Stop profiling."""
+    await _global_state.tokenizer_manager.stop_profile()
+    return Response(
+        content="Stop profiling. This will take some time.\n",
+        status_code=200,
+    )
 
 
 def _create_error_response(e):

@@ -26,10 +26,12 @@ from minisglang.utils.io_struct import (
     FlushCacheReqInput,
     FlushCacheReqOutput,
     GenerateReqInput,
+    ProfileReq,
+    ProfileReqType,
     TokenizedGenerateReqInput,
 )
 from minisglang.utils.ipc import get_zmq_socket
-from minisglang.utils import _Communicator, LimitedCapacityDict, TypeBasedDispatcher, find_printable_text
+from minisglang.utils import _Communicator, LimitedCapacityDict, TypeBasedDispatcher, find_printable_text, get_bool_env_var
 
 import logging
 logger = logging.getLogger(__name__)
@@ -108,6 +110,8 @@ class TokenizerManager:
         # Communicators
         self.flush_cache_communicator = _Communicator(self.send_to_scheduler, 1)
 
+        self.profile_communicator = _Communicator(self.send_to_scheduler, 1)
+
         self._result_dispatcher = TypeBasedDispatcher(
             [
                 (BatchTokenIDOut, self._handle_batch_token_id_out),
@@ -146,6 +150,42 @@ class TokenizerManager:
     async def flush_cache(self) -> FlushCacheReqOutput:
         return (await self.flush_cache_communicator(FlushCacheReqInput()))[0]
 
+    async def start_profile(
+        self,
+        output_dir: Optional[str] = None,
+        start_step: Optional[int] = None,
+        num_steps: Optional[int] = None,
+        activities: Optional[List[str]] = None,
+        with_stack: Optional[bool] = None,
+        record_shapes: Optional[bool] = None,
+        profile_by_stage: bool = False,
+    ):
+        self.auto_create_handle_loop()
+        env_with_stack: bool = get_bool_env_var("SGLANG_PROFILE_WITH_STACK", "true")
+        with_stack = False if with_stack is False or env_with_stack is False else True
+        req = ProfileReq(
+            type=ProfileReqType.START_PROFILE,
+            output_dir=output_dir,
+            start_step=start_step,
+            num_steps=num_steps,
+            activities=activities,
+            with_stack=with_stack,
+            record_shapes=record_shapes,
+            profile_by_stage=profile_by_stage,
+            profile_id=str(time.time()),
+        )
+        return await self._execute_profile(req)
+
+    async def stop_profile(self):
+        self.auto_create_handle_loop()
+        req = ProfileReq(type=ProfileReqType.STOP_PROFILE)
+        return await self._execute_profile(req)
+
+    async def _execute_profile(self, req: ProfileReq):
+        result = (await self.profile_communicator(req))[0]
+        if not result.success:
+            raise RuntimeError(result.message)
+        return result
     def auto_create_handle_loop(self):
         if self.created_loop:
             return
@@ -300,6 +340,7 @@ class TokenizerManager:
                 except StopAsyncIteration:
                     pass
 
+    
     async def _batch_tokenize_and_process(
         self, batch_size: int, obj: GenerateReqInput
     ) -> List[TokenizedGenerateReqInput]:
