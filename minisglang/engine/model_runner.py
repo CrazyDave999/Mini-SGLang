@@ -1,5 +1,6 @@
 from typing import Optional
 from click import Option
+from minisglang.layers.attention_backends.flash_attention_backend import FlashAttentionBackend
 from minisglang.memory import page_manager
 from minisglang.utils import get_available_gpu_memory
 import torch
@@ -75,8 +76,6 @@ class ModelRunner:
         torch.set_default_device("cuda")
         torch.set_default_dtype(self.model_config.dtype)
         
-        self.attn_backend = TorchNativeAttnBackend(self)
-        
         # Get memory before model loading
         min_per_gpu_memory = self.init_torch_distributed()
         self.tp_cpu_group = dist.new_group(ranks=[i for i in range(self.tp_size)], backend="gloo")
@@ -88,6 +87,9 @@ class ModelRunner:
         # init memory
         self.init_memory_pool(min_per_gpu_memory, server_args.max_running_requests, server_args.max_total_tokens)
 
+        # self.attn_backend = TorchNativeAttnBackend(self)
+        self.attn_backend = FlashAttentionBackend(self)
+        
         
     def init_torch_distributed(self):
         logger.info("Init torch distributed begin.")

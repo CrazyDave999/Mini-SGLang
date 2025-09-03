@@ -113,7 +113,7 @@ class PagedRadixCache:
             return (
                 torch.empty(
                     (0,),
-                    dtype=torch.int64,
+                    dtype=torch.int32,
                     device=self.device,
                 ),
                 self.root_node,
@@ -128,7 +128,7 @@ class PagedRadixCache:
         if value:
             value = torch.cat(value)
         else:
-            value = torch.empty((0,), dtype=torch.int64, device=self.device)
+            value = torch.empty((0,), dtype=torch.int32, device=self.device)
         return value, last_node
 
     def insert(self, key: List, value=None):
@@ -377,7 +377,7 @@ class PagedRadixCache:
 def _test_insert(tree_cache: PagedRadixCache, key: str):
     tree_cache.insert(
         key,
-        torch.arange(0, len(key), device=tree_cache.device, dtype=torch.int64)
+        torch.arange(0, len(key), device=tree_cache.device, dtype=torch.int32)
     )
     
 if __name__ == "__main__":

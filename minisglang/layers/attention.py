@@ -27,27 +27,28 @@ class Attention(nn.Module):
         batch: Batch,
     ) -> torch.Tensor:
         # call the flash_attention backend
-        # return batch.attn_backend.forward(
-        #     q=q,
-        #     k=k,
-        #     v=v,
-        #     layer_id=self.layer_id,
-        #     batch=batch,
-        # )
+        return batch.attn_backend.forward(
+            q=q,
+            k=k,
+            v=v,
+            layer=self,
+            batch=batch,
+        )
         
-        if batch.mode.is_prefill():
-            return batch.attn_backend.forward_extend(
-                q=q,
-                k=k,
-                v=v,
-                layer=self,
-                batch=batch
-            )
-        else:
-            return batch.attn_backend.forward_decode(
-                q=q,
-                k=k,
-                v=v,
-                layer=self,
-                batch=batch
-            )
+        # # call the torch native
+        # if batch.mode.is_prefill():
+        #     return batch.attn_backend.forward_extend(
+        #         q=q,
+        #         k=k,
+        #         v=v,
+        #         layer=self,
+        #         batch=batch
+        #     )
+        # else:
+        #     return batch.attn_backend.forward_decode(
+        #         q=q,
+        #         k=k,
+        #         v=v,
+        #         layer=self,
+        #         batch=batch
+        #     )
