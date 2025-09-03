@@ -125,7 +125,7 @@ class Req:
     def finished(self):
         return self.finished_reason is not None
 
-    def init_next_round_input(self, tree_cache):
+    def init_next_round_input(self, tree_cache: "PagedRadixCache"):
         self.fill_ids = self.origin_input_ids + self.output_ids
         self.prefix_ppns, self.last_node = tree_cache.match_prefix(
             key=self.adjust_max_prefix_ids()
@@ -266,6 +266,7 @@ class Batch:
             seq_lens,
             dtype=torch.int64,
         ).to(self.device, non_blocking=True)
+
         prefix_lens_tensor = torch.tensor(
             prefix_lens,
             dtype=torch.int64,
@@ -280,12 +281,14 @@ class Batch:
             # set page_table_id
             req.page_table_id = page_table_ids[i]
 
-            new_pages = torch.tensor(
-                new_pages,
-                device=self.device,
-            )
+            prefix_ppns_tensor = torch.tensor(
+                req.prefix_ppns, dtype=torch.int32
+            ).to(self.device, non_blocking=True)
+            new_pages_tensor = torch.tensor(
+                new_pages, dtype=torch.int32
+            ).to(self.device, non_blocking=True)
             # write ppns to page table (prefix & newly allocated pages)
-            ppns = torch.cat((req.prefix_ppns, new_pages))
+            ppns = torch.cat((prefix_ppns_tensor, new_pages_tensor))
             self.page_manager.write_ppns_prefill(req.page_table_id, ppns)
 
         # set fields
@@ -375,7 +378,7 @@ class Batch:
             self.output_ids = torch.cat([self.output_ids, other.output_ids])
         self.reqs.extend(other.reqs)
 
-    def check_decode_mem(self, buf_multiplier: float):
+    def check_decode_mem(self, buf_multiplier: float = 1.0):
         num_new_pages = sum(
             1 for seqlen in self.seq_lens if seqlen % self.page_size == 0
         )

@@ -47,7 +47,7 @@ import dataclasses
 import itertools
 import json
 import logging
-import multiprocessing
+import multiprocessing as mp
 import os
 import time
 from typing import Tuple
@@ -277,7 +277,7 @@ def main(server_args, bench_args):
     else:
         workers = []
         for tp_rank in range(server_args.tp_size):
-            proc = multiprocessing.Process(
+            proc = mp.Process(
                 target=work_func,
                 args=(
                     server_args,
@@ -300,6 +300,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     server_args = ServerArgs.from_cli_args(args)
     bench_args = BenchArgs.from_cli_args(args)
+    mp.set_start_method("spawn", force=True)
 
     # logging.basicConfig(
     #     level=getattr(logging, server_args.log_level.upper()),

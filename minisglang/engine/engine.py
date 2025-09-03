@@ -95,6 +95,7 @@ def _launch_subprocesses(server_args: ServerArgs) -> TokenizerManager:
     # run the scheduler subprocesses
     scheduler_procs = []
     scheduler_pipe_readers = []
+    mp.set_start_method("spawn", force=True)
     for tp_rank in range(server_args.tp_size):
         reader, writer = mp.Pipe(duplex=False)
         proc = mp.Process(

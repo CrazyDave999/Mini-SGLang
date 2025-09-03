@@ -1,12 +1,21 @@
-from minisglang.engine.batch import Batch
+from pyexpat import model
 import torch
 import torch.nn as nn
 
-# from sgl_kernel.flash_attn import flash_attn_varlen_func, flash_attn_with_kvcache
+from sgl_kernel.flash_attn import flash_attn_varlen_func, flash_attn_with_kvcache
 
-from flash_attn import flash_attn_with_kvcache
+# from flash_attn import flash_attn_with_kvcache
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from minisglang.memory.page_manager import PageManager
+    from minisglang.engine.model_runner import ModelRunner
+
+
+from minisglang.engine.batch import Batch
+from minisglang.layers.attention import Attention
 
 
 
@@ -33,17 +42,18 @@ class FlashAttentionMetaData:
 
 
 class FlashAttentionBackend:
-    def __init__(self, model_runner):
+    def __init__(self, model_runner: "ModelRunner"):
         self.forward_metadata: FlashAttentionMetaData = None
         self.max_context_len = model_runner.model_config.context_len
         self.device = model_runner.device
         self.page_manager = model_runner.page_manager
         self.page_size = model_runner.page_size
+        self.page_num = model_runner.kvcache.page_num
 
     def init_forward_metadata(self, batch: Batch):
         metadata = FlashAttentionMetaData()
         seqlens_in_batch = batch.seq_lens
-        batch_size = len(seqlens_in_batch)
+        batch_size = seqlens_in_batch.shape[0]
         device = batch.device
         if batch.mode.is_decode():
             metadata.cache_seqlens_int32 = seqlens_in_batch.to(torch.int32)
@@ -78,13 +88,18 @@ class FlashAttentionBackend:
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
-        layer_id: int,
+        layer: Attention,
         batch: Batch,
     ) -> torch.Tensor:
         if k is not None:
             assert v is not None
             # write the newly calculated kv to the kv cache
-            batch.kvcache.write_kv(layer_id, batch.out_cache_loc, k, v)
+            batch.kvcache.write_kv(
+                layer.layer_id,
+                batch.out_cache_loc,
+                k.view(-1, layer.num_kv_heads, layer.head_dim),
+                v.view(-1, layer.num_kv_heads, layer.head_dim)
+            )
             
         window_size = (-1, -1)
         
@@ -95,38 +110,43 @@ class FlashAttentionBackend:
         cache_seqlens = metadata.cache_seqlens_int32
         max_seqlen_q = metadata.max_seqlen_q
         max_seqlen_k = metadata.max_seqlen_k
-        k_cache, v_cache = batch.kvcache.get_kv_cache(layer_id)
+        k_cache, v_cache = batch.kvcache.get_kv_cache(layer.layer_id)
+        # print(f"{q.shape=} {k_cache.shape=} {v_cache.shape=}")
         
         # FA3
+        q = q.contiguous().view(-1, layer.num_heads, layer.head_dim)
+        k_cache=k_cache.view(self.page_num, self.page_size, layer.num_kv_heads, layer.head_dim)
+        v_cache=v_cache.view(self.page_num, self.page_size, layer.num_kv_heads, layer.head_dim)
+        # print(f"{q.shape=} {k_cache.shape=} {v_cache.shape=}")
+        o = flash_attn_with_kvcache(
+            q=q,
+            k_cache=k_cache,
+            v_cache=v_cache,
+            page_table=page_table,
+            cache_seqlens=cache_seqlens,
+            cu_seqlens_q=cu_seqlens_q,
+            cu_seqlens_k_new=cu_seqlens_k,
+            max_seqlen_q=max_seqlen_q,
+            softmax_scale=None,
+            causal=True,
+            window_size=window_size,
+            k_descale=None,
+            v_descale=None,
+            return_softmax_lse=False,
+        )
+        o = o.view(-1, layer.num_heads * layer.head_dim)
+        
+        # FA2
         # o = flash_attn_with_kvcache(
-        #     q=q.contiguous(),
-        #     k_cache=k_cache,
-        #     v_cache=v_cache,
-        #     page_table=page_table,
+        #     q=q.contiguous().view(-1, layer.num_heads, layer.head_dim),
+        #     k_cache=k_cache.view(self.page_num, self.page_size, layer.num_kv_heads, layer.head_dim),
+        #     v_cache=v_cache.view(self.page_num, self.page_size, layer.num_kv_heads, layer.head_dim),
         #     cache_seqlens=cache_seqlens,
-        #     cu_seqlens_q=cu_seqlens_q,
-        #     cu_seqlens_k_new=cu_seqlens_k,
-        #     max_seqlen_q=max_seqlen_q,
-        #     softmax_scale=None,
+        #     block_table=page_table,
         #     causal=True,
         #     window_size=window_size,
-        #     softcap=None,
-        #     k_descale=None,
-        #     v_descale=None,
         #     return_softmax_lse=False,
         # )
         
-        # FA2
-        o = flash_attn_with_kvcache(
-            q=q.contiguous(),
-            k_cache=k_cache,
-            v_cache=v_cache,
-            cache_seqlens=cache_seqlens,
-            block_table=page_table,
-            causal=True,
-            window_size=window_size,
-            return_softmax_lse=False,
-        )
-            
         return o
     
