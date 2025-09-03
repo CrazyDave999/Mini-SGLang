@@ -8,27 +8,27 @@ A simple version of sglang project. For study purpose.
 - [x] Tokenizer & Detokenizer & Scheduler procs
 - [x] Model Runner forward
 - [x] Zmq IPC for worker/control reqs
-- [ ] Server & APIs
+- [x] Server & APIs
   
 ### Memory Management
 - [x] PageManager
   - [x] page size = 1
   - [x] page size > 1
 - [x] KVCache
-- [ ] RadixCache
+- [x] RadixCache
   - [x] Insert Prefix
   - [x] Prefix Matching
-  - [ ] Evict
+  - [x] Evict
 
 ### Scheduler
 - [x] FSFS/Random
 - [ ] Cache Aware(LPM)
-- [ ] Aggressive max_new_tokens prediction & Retracting
+- [x] Aggressive max_new_tokens prediction & Retracting
 - [ ] Chunked Prefill
 
 ### Backend
 - [x] Torch Native kernels
-- [ ] FA3 support
+- [x] FA3 support
 
 ### Distributed Support
 - [x] Tensor Parallelism
@@ -42,7 +42,7 @@ A simple version of sglang project. For study purpose.
 - [ ] Mixtral MoE
 
 ### Optimizations
-- [ ] Stream Output
+- [x] Stream Output
 - [ ] CUDA graph forward
 - [ ] Overlap Scheduling
 - [ ] Unit tests
