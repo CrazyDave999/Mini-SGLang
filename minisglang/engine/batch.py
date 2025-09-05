@@ -207,9 +207,12 @@ class Batch:
     input_ids: torch.Tensor = None
 
     output_ids: torch.Tensor = None
-    device: str = "cuda"
-
     out_cache_loc: torch.Tensor = None
+    device: str = "cuda"
+    
+    # The sum of all sequence lengths
+    seq_lens_sum: int = None
+
     positions: torch.Tensor = None
 
     attn_backend = None
@@ -234,7 +237,7 @@ class Batch:
         return len(self.reqs) == 0
 
     def batch_size(self):
-        return len(self.reqs)
+        return len(self.reqs) if self.reqs is not None else self.seq_lens.shape[0]
 
     def alloc_req_slots(self, num_reqs: int):
         page_table_ids = self.page_manager.allocate(num_reqs)
@@ -315,16 +318,19 @@ class Batch:
         self.out_cache_loc = self.page_manager.page_table[
             page_table_id_mask, self.positions // self.page_size
         ] * self.page_size + (self.positions % self.page_size)
+        self.seq_lens_sum = sum(seq_lens)
 
     def prepare_for_decode(self):
         self.mode = Mode.DECODE
-        batch_size = len(self.reqs)
+        bs = len(self.reqs)
 
+        # update tensors
         self.input_ids = self.output_ids
         self.output_ids = None
         self.seq_lens = self.seq_lens + 1
         self.positions = self.seq_lens - 1
 
+        # allocate pages and write ppns to page_table
         ppns_list: List[List[int]] = self.kvcache.allocate_pages_decode(self.seq_lens)
         last_vpns = self.positions // self.page_size
 
@@ -341,6 +347,7 @@ class Batch:
         self.out_cache_loc = self.page_manager.page_table[
             page_table_id_mask, self.positions // self.page_size
         ] * self.page_size + (self.positions % self.page_size)
+        self.seq_lens_sum += bs
 
     def filter_batch(
         self,
@@ -368,12 +375,15 @@ class Batch:
         self.prefix_lens = self.prefix_lens[keep_indices_device]
         self.input_ids = self.input_ids[keep_indices_device]
         self.output_ids = self.output_ids[keep_indices_device]
+        self.out_cache_loc = None
+        self.seq_lens_sum = self.seq_lens.sum().item()
 
     def merge_batch(self, other):
         """merge the last prefill batch into the running decode batch"""
         self.page_table_ids = torch.cat([self.page_table_ids, other.page_table_ids])
         self.seq_lens = torch.cat([self.seq_lens, other.seq_lens])
         self.out_cache_loc = None
+        self.seq_lens_sum += other.seq_lens_sum
         if self.output_ids is not None:
             self.output_ids = torch.cat([self.output_ids, other.output_ids])
         self.reqs.extend(other.reqs)

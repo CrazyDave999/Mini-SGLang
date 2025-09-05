@@ -1,3 +1,4 @@
+from time import time
 from typing import Optional
 from click import Option
 from minisglang.layers.attention_backends.flash_attention_backend import FlashAttentionBackend
@@ -25,6 +26,7 @@ from minisglang.models.llama import LlamaForCausalLM
 from minisglang.utils.args import ServerArgs
 
 from minisglang.memory.radix_cache import PagedRadixCache
+from minisglang.engine.cuda_graph_runner import CudaGraphRunner
 
 def default_weight_loader(param: nn.Parameter, loaded_weight: torch.Tensor):
     param.data.copy_(loaded_weight)
@@ -89,6 +91,8 @@ class ModelRunner:
 
         # self.attn_backend = TorchNativeAttnBackend(self)
         self.attn_backend = FlashAttentionBackend(self)
+        
+        self.init_cuda_graphs()
         
         
     def init_torch_distributed(self):
@@ -190,6 +194,13 @@ class ModelRunner:
         self,
         batch: Batch,
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        can_run_cuda_graph = bool(
+            batch.mode.is_decode()
+            and self.cuda_graph_runner
+            and self.cuda_graph_runner.can_run(batch)
+        )
+        if can_run_cuda_graph:
+            return self.cuda_graph_runner.replay(batch)
 
         self.attn_backend.init_forward_metadata(batch)
         batch.attn_backend = self.attn_backend
@@ -202,3 +213,20 @@ class ModelRunner:
         next_token_ids = self.sampler(logits=logits_output, temperatures=temperatures)
 
         return logits_output, next_token_ids
+    def init_cuda_graphs(self):
+        """Capture cuda graphs."""
+        self.cuda_graph_runner = None
+        self.cuda_graph_mem_usage = 0
+        
+        tic = time.perf_counter()
+        before_mem = get_available_gpu_memory(self.device, self.gpu_id)
+        logger.info(
+            f"Capture cuda graph begin. This can take up to several minutes. avail mem={before_mem:.2f} GB"
+        )
+        self.cuda_graph_runner = CudaGraphRunner(self)
+        after_mem = get_available_gpu_memory(self.device, self.gpu_id)
+        self.cuda_graph_mem_usage = before_mem - after_mem
+        logger.info(
+            f"Capture cuda graph end. Time elapsed: {time.perf_counter() - tic:.2f} s. "
+            f"mem usage={self.cuda_graph_mem_usage:.2f} GB. avail mem={after_mem:.2f} GB."
+        )

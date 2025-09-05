@@ -7,16 +7,15 @@ from sgl_kernel.flash_attn import flash_attn_varlen_func, flash_attn_with_kvcach
 # from flash_attn import flash_attn_with_kvcache
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
     from minisglang.memory.page_manager import PageManager
     from minisglang.engine.model_runner import ModelRunner
 
 
-from minisglang.engine.batch import Batch
+from minisglang.engine.batch import Batch, Mode
 from minisglang.layers.attention import Attention
-
 
 
 @dataclass
@@ -83,6 +82,105 @@ class FlashAttentionBackend:
 
         self.forward_metadata = metadata
 
+    def init_cuda_graph_state(self, max_bs: int):
+        self.decode_cuda_graph_metadata = {
+            "cache_seqlens": torch.zeros(max_bs, dtype=torch.int32, device=self.device),
+            "cu_seqlens_q": torch.arange(
+                0, max_bs + 1, dtype=torch.int32, device=self.device
+            ),
+            "cu_seqlens_k": torch.zeros(
+                max_bs + 1, dtype=torch.int32, device=self.device
+            ),
+            "page_table": torch.zeros(
+                max_bs,
+                (self.max_context_len + self.page_size - 1) // self.page_size,
+                dtype=torch.int32,
+                device=self.device,
+            ),
+            "page_table_draft_decode": torch.zeros(
+                max_bs,
+                (self.max_context_len + self.page_size - 1) // self.page_size,
+                dtype=torch.int32,
+                device=self.device,
+            ),
+            "strided_indices": torch.arange(
+                0, self.max_context_len, self.page_size, device=self.device
+            ),
+        }
+
+    def init_forward_metadata_capture_cuda_graph(
+        self,
+        bs: int,
+        num_tokens: int,
+        page_table_ids: torch.Tensor,
+        seq_lens: torch.Tensor,
+        forward_mode: Mode,
+    ):
+        metadata = FlashAttentionMetaData()
+        device = seq_lens.device
+        if forward_mode.is_decode():
+            # Normal Decode. Get sequence information
+            metadata.cache_seqlens_int32 = seq_lens.to(torch.int32)
+            batch_size = len(seq_lens)
+            device = seq_lens.device
+            metadata.cu_seqlens_k = torch.nn.functional.pad(
+                torch.cumsum(seq_lens, dim=0, dtype=torch.int32), (1, 0)
+            )
+            # Precompute maximum sequence length
+            metadata.max_seq_len_k = seq_lens.max().item()
+            # Precompute page table
+            metadata.page_table = self.decode_cuda_graph_metadata["page_table"][
+                page_table_ids, :
+            ]
+            # Precompute cumulative sequence lengths
+            metadata.cu_seqlens_q = torch.arange(
+                0, batch_size + 1, dtype=torch.int32, device=device
+            )
+            self.decode_cuda_graph_metadata[bs] = metadata
+        else:
+            raise NotImplementedError()
+
+        self.forward_metadata = metadata
+
+    def init_forward_metadata_replay_cuda_graph(
+        self,
+        bs: int,
+        page_table_ids: torch.Tensor,
+        seq_lens: torch.Tensor,
+        seq_lens_sum: int,
+        forward_mode: Mode,
+        seq_lens_cpu: Optional[torch.Tensor],
+        out_cache_loc: Optional[torch.Tensor] = None,
+    ):
+        """Initialize forward metadata for replaying CUDA graph."""
+        seq_lens = seq_lens[:bs]
+        seq_lens_cpu = seq_lens_cpu[:bs]
+        page_table_ids = page_table_ids[:bs]
+        device = seq_lens.device
+        metadata = None
+
+        if forward_mode.is_decode():
+            # Normal Decode
+            metadata = self.decode_cuda_graph_metadata[bs]
+            max_len = seq_lens_cpu.max().item()
+            max_seq_pages = (max_len + self.page_size - 1) // self.page_size
+            metadata.max_seq_len_k = max_len
+            
+            normal_decode_set_metadata(
+                cache_seqlens_int32=metadata.cache_seqlens_int32,
+                cu_seqlens_k=metadata.cu_seqlens_k,
+                page_table=metadata.page_table,
+                origin_page_table=self.page_manager.page_table,
+                page_table_ids=page_table_ids,
+                max_seq_pages=max_seq_pages,
+                seq_lens=seq_lens,
+                seq_len_delta=0,
+            )
+        else:
+            raise NotImplementedError()
+        
+        self.forward_metadata = metadata
+
     def forward(
         self,
         q: torch.Tensor,
@@ -98,11 +196,11 @@ class FlashAttentionBackend:
                 layer.layer_id,
                 batch.out_cache_loc,
                 k.view(-1, layer.num_kv_heads, layer.head_dim),
-                v.view(-1, layer.num_kv_heads, layer.head_dim)
+                v.view(-1, layer.num_kv_heads, layer.head_dim),
             )
-            
+
         window_size = (-1, -1)
-        
+
         metadata = self.forward_metadata
         page_table = metadata.page_table
         cu_seqlens_q = metadata.cu_seqlens_q
@@ -112,11 +210,15 @@ class FlashAttentionBackend:
         max_seqlen_k = metadata.max_seqlen_k
         k_cache, v_cache = batch.kvcache.get_kv_cache(layer.layer_id)
         # print(f"{q.shape=} {k_cache.shape=} {v_cache.shape=}")
-        
+
         # FA3
         q = q.contiguous().view(-1, layer.num_heads, layer.head_dim)
-        k_cache=k_cache.view(self.page_num, self.page_size, layer.num_kv_heads, layer.head_dim)
-        v_cache=v_cache.view(self.page_num, self.page_size, layer.num_kv_heads, layer.head_dim)
+        k_cache = k_cache.view(
+            self.page_num, self.page_size, layer.num_kv_heads, layer.head_dim
+        )
+        v_cache = v_cache.view(
+            self.page_num, self.page_size, layer.num_kv_heads, layer.head_dim
+        )
         # print(f"{q.shape=} {k_cache.shape=} {v_cache.shape=}")
         o = flash_attn_with_kvcache(
             q=q,
@@ -135,7 +237,7 @@ class FlashAttentionBackend:
             return_softmax_lse=False,
         )
         o = o.view(-1, layer.num_heads * layer.head_dim)
-        
+
         # FA2
         # o = flash_attn_with_kvcache(
         #     q=q.contiguous().view(-1, layer.num_heads, layer.head_dim),
@@ -147,6 +249,23 @@ class FlashAttentionBackend:
         #     window_size=window_size,
         #     return_softmax_lse=False,
         # )
-        
+
         return o
-    
+
+
+def normal_decode_set_metadata(
+    cache_seqlens_int32: torch.Tensor,
+    cu_seqlens_k: torch.Tensor,
+    page_table: torch.Tensor,
+    origin_page_table: torch.Tensor,
+    page_table_ids: torch.Tensor,
+    max_seq_pages: torch.Tensor,
+    seq_lens: torch.Tensor,
+    seq_len_delta: int,
+):
+    cache_seqlens_int32.copy_(seq_lens + seq_len_delta)
+    cu_seqlens_k[1:].copy_(torch.cumsum(cache_seqlens_int32, dim=0, dtype=torch.int32))
+
+    page_table[:, :max_seq_pages].copy_(
+        origin_page_table[page_table_ids, :max_seq_pages]
+    )
