@@ -8,9 +8,10 @@ logger = logging.getLogger(__name__)
 
 from minisglang.memory.kvcache import KVCache
 from enum import Enum
-from minisglang.layers.sampler import SamplingParams
+from minisglang.layers.sampler import SamplingBatchInfo, SamplingParams
 
 from minisglang.utils.args import global_config
+
 if TYPE_CHECKING:
     from minisglang.memory.page_manager import PageManager
     from minisglang.memory.radix_cache import PagedRadixCache
@@ -179,7 +180,7 @@ class Req:
         if matched_eos:
             self.finished_reason = FINISH_MATCHED_TOKEN(matched=last_token_id)
             return
-        
+
     def reset_for_retract(self):
         self.prefix_ppns = []
         self.last_node = None
@@ -209,9 +210,14 @@ class Batch:
     output_ids: torch.Tensor = None
     out_cache_loc: torch.Tensor = None
     device: str = "cuda"
-    
+
     # The sum of all sequence lengths
     seq_lens_sum: int = None
+    # Optional seq_lens on cpu
+    seq_lens_cpu: Optional[torch.Tensor] = None
+    
+    # Sampling info
+    sampling_info: SamplingBatchInfo = None
 
     positions: torch.Tensor = None
 
@@ -251,9 +257,7 @@ class Batch:
         page_table_ids = self.alloc_req_slots(batch_size)
 
         reqs = self.reqs
-        input_ids = [
-            r.fill_ids[len(r.prefix_ppns) * self.page_size :] for r in reqs
-        ]
+        input_ids = [r.fill_ids[len(r.prefix_ppns) * self.page_size :] for r in reqs]
 
         seq_lens = [len(r.fill_ids) for r in reqs]
         prefix_lens = [len(r.prefix_ppns) * self.page_size for r in reqs]
@@ -284,12 +288,12 @@ class Batch:
             # set page_table_id
             req.page_table_id = page_table_ids[i]
 
-            prefix_ppns_tensor = torch.tensor(
-                req.prefix_ppns, dtype=torch.int32
-            ).to(self.device, non_blocking=True)
-            new_pages_tensor = torch.tensor(
-                new_pages, dtype=torch.int32
-            ).to(self.device, non_blocking=True)
+            prefix_ppns_tensor = torch.tensor(req.prefix_ppns, dtype=torch.int32).to(
+                self.device, non_blocking=True
+            )
+            new_pages_tensor = torch.tensor(new_pages, dtype=torch.int32).to(
+                self.device, non_blocking=True
+            )
             # write ppns to page table (prefix & newly allocated pages)
             ppns = torch.cat((prefix_ppns_tensor, new_pages_tensor))
             self.page_manager.write_ppns_prefill(req.page_table_id, ppns)
@@ -319,6 +323,11 @@ class Batch:
             page_table_id_mask, self.positions // self.page_size
         ] * self.page_size + (self.positions % self.page_size)
         self.seq_lens_sum = sum(seq_lens)
+
+        # Build sampling info
+        self.sampling_info = SamplingBatchInfo.from_batch(
+            self,
+        )
 
     def prepare_for_decode(self):
         self.mode = Mode.DECODE
@@ -355,7 +364,9 @@ class Batch:
     ):
         """filter out finished requests"""
         if keep_indices is None:
-            keep_indices = [i for i in range(len(self.reqs)) if not self.reqs[i].finished()]
+            keep_indices = [
+                i for i in range(len(self.reqs)) if not self.reqs[i].finished()
+            ]
 
         if keep_indices is None or len(keep_indices) == 0:
             # Filter out all requests
@@ -364,7 +375,7 @@ class Batch:
         if len(keep_indices) == len(self.reqs):
             # No need to filter
             return
-        
+
         keep_indices_device = torch.tensor(keep_indices, dtype=torch.int64).to(
             self.device, non_blocking=True
         )
@@ -414,12 +425,17 @@ class Batch:
         retracted_reqs = []
         seq_lens_cpu = self.seq_lens.cpu().numpy()
         first_iter = True
-        
+
         def get_required_num_pages(num_reqs: int):
-            return num_reqs * (global_config.retract_decode_steps + self.page_size - 1) // self.page_size
+            return (
+                num_reqs
+                * (global_config.retract_decode_steps + self.page_size - 1)
+                // self.page_size
+            )
 
         while (
-            self.kvcache.available_page_num() < get_required_num_pages(len(sorted_indices))
+            self.kvcache.available_page_num()
+            < get_required_num_pages(len(sorted_indices))
             or first_iter
         ):
             if len(sorted_indices) == 1:
@@ -452,15 +468,15 @@ class Batch:
             )
             residual_size = max(0, residual_size)
             self.tree_cache.evict(residual_num_pages)
-            
+
             req.reset_for_retract()
-            
+
             if len(retracted_reqs) == 0:
                 # Corner case: only one request left
                 raise ValueError(
                     "Failed to retract any request. No space left for only one request."
                 )
-                
+
         self.filter_batch()
         # Reqs in batch are filtered
         total_decoded_tokens = sum(len(r.output_ids) for r in self.reqs)

@@ -378,7 +378,12 @@ class Scheduler:
             
 
     def run_batch(self, batch: Batch) -> GenerationBatchResult:
-        logits_output, next_token_ids = self.model_runner.forward(batch)
+        if batch.mode.is_prefill():
+            print(f"[TP {self.tp_rank}] Running prefill batch")
+        else:
+            print(f"[TP {self.tp_rank}] Running decode batch")
+        logits_output = self.model_runner.forward(batch)
+        next_token_ids = self.model_runner.sample(logits_output, batch)
         batch.output_ids = next_token_ids
         return GenerationBatchResult(
             bid=batch.bid,

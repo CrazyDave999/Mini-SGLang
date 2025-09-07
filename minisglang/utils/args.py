@@ -7,7 +7,7 @@ import random
 import tempfile
 from typing import List, Optional
 
-from minisglang.utils import is_port_available
+from minisglang.utils import get_nvgpu_memory_capacity, is_port_available
 
 
 
@@ -33,6 +33,13 @@ class ServerArgs:
     tp_size: int = 1
     stream_interval: int = 1
     stream_output: bool = False
+    
+    # Optimization/debug options
+    cuda_graph_max_bs: Optional[int] = None
+    cuda_graph_bs: Optional[List[int]] = None
+    disable_cuda_graph: bool = False
+    disable_cuda_graph_padding: bool = False
+    enable_torch_compile: bool = False
     
     # Logging
     log_level: str = "info"
@@ -126,6 +133,35 @@ class ServerArgs:
             help="Whether to output as a sequence of disjoint segments.",
         )
         
+        # Optimization/debug options
+        parser.add_argument(
+            "--cuda-graph-max-bs",
+            type=int,
+            default=ServerArgs.cuda_graph_max_bs,
+            help="Set the maximum batch size for cuda graph. It will extend the cuda graph capture batch size to this value.",
+        )
+        parser.add_argument(
+            "--cuda-graph-bs",
+            type=int,
+            nargs="+",
+            help="Set the list of batch sizes for cuda graph.",
+        )
+        parser.add_argument(
+            "--disable-cuda-graph",
+            action="store_true",
+            help="Disable cuda graph.",
+        )
+        parser.add_argument(
+            "--disable-cuda-graph-padding",
+            action="store_true",
+            help="Disable cuda graph when padding is needed. Still uses cuda graph when padding is not needed.",
+        )
+        parser.add_argument(
+            "--enable-torch-compile",
+            action="store_true",
+            help="Optimize the model with torch.compile. Experimental feature.",
+        )
+        
         # Logging
         parser.add_argument(
             "--log-level",
@@ -133,7 +169,21 @@ class ServerArgs:
             default=ServerArgs.log_level,
             help="The logging level of all loggers.",
         )
+    
+    def __post_init__(self):
+        if self.tokenizer_path is None:
+            self.tokenizer_path = self.model_path
         
+        gpu_mem = get_nvgpu_memory_capacity()
+        
+        # Set cuda graph max batch size
+        if self.cuda_graph_max_bs is None:
+            # Based on detailed statistics, when serving TP1/TP2 models on lower-end GPUs with HBM<25G, you can either disable cuda graph or set `cuda_graph_max_bs` to a very small value to reduce the memory overhead of creating cuda graphs, with almost no impact on performance. However, when serving models with TP4 or TP8, we need to enable cuda graph to maintain high performance. In this case, we can set `cuda_graph_max_bs` to 80 (half of the default value 160) to reduce the memory overhead of creating cuda graphs. Looking at the logs from TP4 serving of qwen2-72b, a value of 80 is sufficient and can reduce the memory overhead of creating cuda graphs on lower-end GPUs compared to the original 160, avoiding OOM issues.
+            if gpu_mem is not None and gpu_mem < 35 * 1024:
+                if self.tp_size < 4:
+                    self.cuda_graph_max_bs = 8
+                else:
+                    self.cuda_graph_max_bs = 80
     @classmethod
     def from_cli_args(cls, args: argparse.Namespace):
         args.tp_size = args.tensor_parallel_size

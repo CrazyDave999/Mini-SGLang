@@ -200,7 +200,8 @@ def extend(reqs: List[Req], model_runner: ModelRunner):
     )
     batch.prepare_for_prefill()
     
-    logits_output, next_token_ids = model_runner.forward(batch)
+    logits_output = model_runner.forward(batch)
+    next_token_ids = model_runner.sample(logits_output, batch)
     return next_token_ids, logits_output, batch
 
 
@@ -210,7 +211,8 @@ def decode(input_token_ids, batch: Batch, model_runner: ModelRunner):
     batch.prepare_for_decode()
 
 
-    logits_output, next_token_ids = model_runner.forward(batch)
+    logits_output = model_runner.forward(batch)
+    next_token_ids = model_runner.sample(logits_output, batch)
     return next_token_ids, logits_output
 
 

@@ -60,12 +60,24 @@ class ParallelLMHead(VocabParallelEmbedding):
             self.register_parameter("bias", None)
 
     def forward(self, x: torch.Tensor, batch: Batch):
+        """
+        Args:
+            x (torch.Tensor):  shape = (sum_of_input_ids_len, hidden_size_per_partition)
+        """
+        # print(f"ParallelLMHead forward. {x.shape=}, {batch.mode=}")
         if batch.mode.is_prefill():
-            last_indices = batch.seq_lens - batch.prefix_lens - 1
+            last_indices = torch.cumsum(batch.seq_lens - batch.prefix_lens, dim=0) - 1
+            # print(f"Before prefill handling. {last_indices.shape=} {last_indices=}")
             x = x[last_indices].contiguous()
+        # x: shape = (bs, hidden_size)
+        # print(f"After prefill handling. {x.shape=}, {self.weight.shape=}")
         logits = F.linear(x, self.weight)
+        # x: shape = (bs, vocab_size_per_partition))
+        # print(f"After linear. {logits.shape=}")
         if self.tp_size > 1:
             all_logits = [torch.empty_like(logits) for _ in range(self.tp_size)]
             dist.all_gather(all_logits, logits)
             logits = torch.cat(all_logits, dim=-1)
+        # print(f"After all gather. {logits.shape=}")
+        # logits: shape = (bs, vocab_size)
         return logits

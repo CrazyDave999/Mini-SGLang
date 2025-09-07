@@ -1,4 +1,4 @@
-from time import time
+import time
 from typing import Optional
 from click import Option
 from minisglang.layers.attention_backends.flash_attention_backend import FlashAttentionBackend
@@ -193,7 +193,7 @@ class ModelRunner:
     def forward(
         self,
         batch: Batch,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> torch.Tensor:
         can_run_cuda_graph = bool(
             batch.mode.is_decode()
             and self.cuda_graph_runner
@@ -205,26 +205,39 @@ class ModelRunner:
         self.attn_backend.init_forward_metadata(batch)
         batch.attn_backend = self.attn_backend
         
-        # logger.info(f"[TP {self.tp_rank}] Running batch: {batch.input_ids=} {batch.positions=}")
+        print(f"[TP {self.tp_rank}] Running batch: {batch.input_ids.shape=} {batch.positions.shape=}")
         logits_output = self.model.forward(batch.input_ids, batch.positions, batch)
-        # logger.info(f"[TP {self.tp_rank}] Model forward done. {logits_output=}")
+        print(f"[TP {self.tp_rank}] Model forward done. {logits_output.shape=}")
 
-        temperatures = torch.tensor([0.0] * len(batch.seq_lens), device=self.device)
-        next_token_ids = self.sampler(logits=logits_output, temperatures=temperatures)
-
-        return logits_output, next_token_ids
+        # logits_output: shape = (bs, vocab_size)
+        return logits_output
+    
+    def sample(
+        self,
+        logits: torch.Tensor,
+        batch: Batch,
+    ) -> torch.Tensor:
+        
+        next_token_ids = self.sampler(
+            logits=logits, sampling_info=batch.sampling_info
+        )
+        print(f"sample. {next_token_ids.shape=}")
+        return next_token_ids
+            
+    
+    
     def init_cuda_graphs(self):
         """Capture cuda graphs."""
         self.cuda_graph_runner = None
         self.cuda_graph_mem_usage = 0
         
         tic = time.perf_counter()
-        before_mem = get_available_gpu_memory(self.device, self.gpu_id)
+        before_mem = get_available_gpu_memory(self.device, self.tp_rank)
         logger.info(
             f"Capture cuda graph begin. This can take up to several minutes. avail mem={before_mem:.2f} GB"
         )
         self.cuda_graph_runner = CudaGraphRunner(self)
-        after_mem = get_available_gpu_memory(self.device, self.gpu_id)
+        after_mem = get_available_gpu_memory(self.device, self.tp_rank)
         self.cuda_graph_mem_usage = before_mem - after_mem
         logger.info(
             f"Capture cuda graph end. Time elapsed: {time.perf_counter() - tic:.2f} s. "

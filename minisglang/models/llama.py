@@ -292,6 +292,7 @@ class LlamaForCausalLM(nn.Module):
         batch: Batch,
     ) -> torch.Tensor:
         hidden_states = self.model(input_ids, positions, batch)
+        print(f"lm_head. {hidden_states.shape=}")
         logits = self.lm_head(hidden_states, batch)
         return logits
 

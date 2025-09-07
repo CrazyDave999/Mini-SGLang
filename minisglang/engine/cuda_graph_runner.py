@@ -1,9 +1,10 @@
-from ast import Tuple
 import bisect
 from contextlib import contextmanager
 from dataclasses import dataclass
 import logging
-from typing import Callable
+from typing import Callable, TYPE_CHECKING, Tuple
+if TYPE_CHECKING:
+    from minisglang.engine.model_runner import ModelRunner
 
 import tqdm
 
@@ -12,7 +13,7 @@ import torch.distributed
 
 logger = logging.getLogger(__name__)
 from minisglang.engine.batch import Batch, Mode
-from minisglang.engine.model_runner import ModelRunner
+
 from minisglang.utils import get_available_gpu_memory, get_nvgpu_memory_capacity
 
 # Detect whether the current forward pass is in capture mode
@@ -56,7 +57,7 @@ def set_global_graph_memory_pool(val):
 class CudaGraphRunner:
     """A CudaGraphRunner runs the forward pass of a model with cuda graph and torch.compile."""
 
-    def __init__(self, model_runner: ModelRunner):
+    def __init__(self, model_runner: "ModelRunner"):
         # Parse args
         self.model_runner = model_runner
         self.graphs = {}
@@ -118,15 +119,16 @@ class CudaGraphRunner:
             if self.tp_rank == 0:
                 avail_mem = get_available_gpu_memory(
                     self.model_runner.device,
+                    self.tp_rank,
                     empty_cache=False
                 )
                 capture_range.set_description(
                     f"Capturing batches ({bs=} {avail_mem=:.2f} GB)"
                 )
             
-            graph, logits_output, next_token_ids = self.capture_one_batch_size(bs)
+            graph, logits_output = self.capture_one_batch_size(bs)
             self.graphs[bs] = graph
-            self.output_buffers[bs] = (logits_output, next_token_ids)
+            self.output_buffers[bs] = logits_output
             
     
     def capture_one_batch_size(self, bs:int):
@@ -152,6 +154,7 @@ class CudaGraphRunner:
         batch.input_ids = input_ids
         batch.page_table_ids = page_table_ids
         batch.seq_lens = seq_lens
+        batch.seq_lens_cpu = seq_lens.cpu()
         batch.out_cache_loc = out_cache_loc
         batch.positions = positions
 
@@ -174,10 +177,10 @@ class CudaGraphRunner:
         
         global global_graph_memory_pool
         with torch.cuda.graph(graph, pool=global_graph_memory_pool):
-            logits_output, next_token_ids = run_once()
+            logits_output = run_once()
             
         global_graph_memory_pool = graph.pool()
-        return graph, logits_output, next_token_ids
+        return graph, logits_output
         
     def replay_prepare(
         self,
@@ -223,21 +226,19 @@ class CudaGraphRunner:
     def replay(
         self,
         batch: Batch,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> torch.Tensor:
         self.replay_prepare(batch)
         
         # Replay
         self.graphs[self.bs].replay()
 
-        logits_output, next_token_ids = self.output_buffers[self.bs]
-        return (
-            logits_output[: self.raw_num_token],
-            next_token_ids[: self.raw_bs],
-        )
+        logits_output = self.output_buffers[self.bs]
+        return logits_output[: self.raw_num_token]
+        
         
 
 
-def get_batch_sizes_to_capture(model_runner: ModelRunner):
+def get_batch_sizes_to_capture(model_runner: "ModelRunner"):
     server_args = model_runner.server_args
     capture_bs = server_args.cuda_graph_bs
 

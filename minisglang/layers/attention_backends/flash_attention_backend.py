@@ -56,7 +56,7 @@ class FlashAttentionBackend:
         device = batch.device
         if batch.mode.is_decode():
             metadata.cache_seqlens_int32 = seqlens_in_batch.to(torch.int32)
-            metadata.max_seqlen_k = seqlens_in_batch.max().item()
+            metadata.max_seqlen_k = batch.seq_lens_cpu.max().item()
             metadata.cu_seqlens_q = torch.arange(
                 0, batch_size + 1, dtype=torch.int32, device=device
             )
