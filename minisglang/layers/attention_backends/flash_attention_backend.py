@@ -69,7 +69,7 @@ class FlashAttentionBackend:
             ]
         else:
             metadata.cache_seqlens_int32 = seqlens_in_batch.to(torch.int32)
-            metadata.max_seqlen_k = seqlens_in_batch.max().item()
+            metadata.max_seqlen_k = batch.seq_lens_cpu.max().item()
             metadata.cu_seqlens_k = torch.nn.functional.pad(
                 torch.cumsum(seqlens_in_batch, dim=0, dtype=torch.int32),
                 (1, 0),
@@ -237,18 +237,6 @@ class FlashAttentionBackend:
             return_softmax_lse=False,
         )
         o = o.view(-1, layer.num_heads * layer.head_dim)
-
-        # FA2
-        # o = flash_attn_with_kvcache(
-        #     q=q.contiguous().view(-1, layer.num_heads, layer.head_dim),
-        #     k_cache=k_cache.view(self.page_num, self.page_size, layer.num_kv_heads, layer.head_dim),
-        #     v_cache=v_cache.view(self.page_num, self.page_size, layer.num_kv_heads, layer.head_dim),
-        #     cache_seqlens=cache_seqlens,
-        #     block_table=page_table,
-        #     causal=True,
-        #     window_size=window_size,
-        #     return_softmax_lse=False,
-        # )
 
         return o
 

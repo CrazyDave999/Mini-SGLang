@@ -23,7 +23,7 @@ class ServerArgs:
     
     # Memory and scheduling
     mem_fraction_static: float = 0.8
-    max_running_requests: int = 8
+    max_running_requests: Optional[int] = None
     max_total_tokens: int = 1024 * 1024
     schedule_policy: str = "fcfs"
     page_size: int = 1

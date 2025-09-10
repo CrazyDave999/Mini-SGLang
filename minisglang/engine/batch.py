@@ -379,18 +379,24 @@ class Batch:
         keep_indices_device = torch.tensor(keep_indices, dtype=torch.int64).to(
             self.device, non_blocking=True
         )
+        
+        # print(f"filter_batch {self.seq_lens=} {self.prefix_lens=} {keep_indices_device=}")
 
         self.reqs = [self.reqs[i] for i in keep_indices]
         self.page_table_ids = self.page_table_ids[keep_indices_device]
         self.seq_lens = self.seq_lens[keep_indices_device]
-        self.prefix_lens = self.prefix_lens[keep_indices_device]
+        
         self.input_ids = self.input_ids[keep_indices_device]
         self.output_ids = self.output_ids[keep_indices_device]
         self.out_cache_loc = None
         self.seq_lens_sum = self.seq_lens.sum().item()
+        
+        self.sampling_info.filter_batch(keep_indices_device)
 
-    def merge_batch(self, other):
+    def merge_batch(self, other: "Batch"):
         """merge the last prefill batch into the running decode batch"""
+        self.sampling_info.merge_batch(other.sampling_info)
+        
         self.page_table_ids = torch.cat([self.page_table_ids, other.page_table_ids])
         self.seq_lens = torch.cat([self.seq_lens, other.seq_lens])
         self.out_cache_loc = None

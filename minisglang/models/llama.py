@@ -244,6 +244,7 @@ class LlamaModel(nn.Module):
         residual = None
 
         for (i, layer) in enumerate(self.layers):
+            print(f"Layer {i}/{len(self.layers)-1} forward")
             hidden_states, residual = layer(positions, hidden_states, batch, residual)
 
         hidden_states, _ = self.norm(hidden_states, residual)
@@ -292,10 +293,8 @@ class LlamaForCausalLM(nn.Module):
         batch: Batch,
     ) -> torch.Tensor:
         hidden_states = self.model(input_ids, positions, batch)
-        print(f"lm_head. {hidden_states.shape=}")
         logits = self.lm_head(hidden_states, batch)
         return logits
 
-    # def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]):
         
         

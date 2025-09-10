@@ -33,7 +33,20 @@ class SamplingBatchInfo:
             .to(device, non_blocking=True)
         )
         return cls(temperatures=temperatures)
-
+    
+    def merge_batch(self, other: "SamplingBatchInfo"):
+        for item in [
+            "temperatures",
+        ]:
+            self_val = getattr(self, item, None)
+            other_val = getattr(other, item, None)
+            setattr(self, item, torch.cat([self_val, other_val]))
+    def filter_batch(self, keep_indices_device: torch.Tensor):
+        for item in [
+            "temperatures",
+        ]:
+            value = getattr(self, item, None)
+            setattr(self, item, value[keep_indices_device])
 class Sampler(nn.Module):
 
     def __init__(self):
@@ -45,7 +58,7 @@ class Sampler(nn.Module):
         sampling_info: SamplingBatchInfo,
     ):
         # logits: shape = (bs, vocab_size)
-        print(f"sample. {logits.shape=}, {sampling_info=}")
+        print(f"sample. {logits.shape=}, {sampling_info.temperatures.shape=}")
         logits = logits.to(torch.float)
         # greedy_tokens: shape = (bs,)
         greedy_tokens = logits.argmax(dim=-1)
@@ -58,5 +71,5 @@ class Sampler(nn.Module):
             torch.empty_like(probs).exponential_(1) + epsilon
         ).argmax(dim=-1)
         next_token_ids = torch.where(sampling_info.temperatures.view(-1) == 0, greedy_tokens, sample_tokens)
-        print(f"{sampling_info.temperatures.shape=} {greedy_tokens.shape=} {sample_tokens.shape=} {next_token_ids.shape=}")
+        # print(f"{sampling_info.temperatures.shape=} {greedy_tokens.shape=} {sample_tokens.shape=} {next_token_ids.shape=}")
         return next_token_ids

@@ -226,9 +226,12 @@ class RowParallelLinear(LinearBase):
             self.register_parameter("bias", None)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # print(f"[TP{self.tp_rank}] down_proj forward. {x.shape=} {x.dtype=} {x.device=} {self.weight.shape=} {self.weight.dtype=} {self.weight.device=}")
         y = F.linear(x, self.weight, self.bias if self.tp_rank == 0 else None)
+        # print(f"[TP{self.tp_rank}] down_proj forward. {y.shape=} {y.dtype=} {y.device=}")
         if self.tp_size > 1:
             dist.all_reduce(y)
+        # print(f"[TP{self.tp_rank}] down_proj forward. After all reduce")
         return y
 
     def weight_loader(self, param: Parameter, loaded_weight: torch.Tensor):

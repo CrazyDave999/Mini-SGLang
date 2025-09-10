@@ -188,9 +188,9 @@ class Scheduler:
         )
 
         # Print debug info
-        logger.info(
+        print(
             f"max_total_num_tokens={self.model_runner.max_total_num_tokens}, "
-            f"max_running_requests={self.server_args.max_running_requests}, "
+            f"max_running_requests={self.max_running_requests}, "
             f"context_len={self.model_config.context_len}"
         )
 
@@ -328,7 +328,7 @@ class Scheduler:
         )
         f += f"#running-req: {running_bs}, "
         f += f"#queue-req: {len(self.waiting_queue)}, "
-        logger.info(f"[TP {self.tp_rank}] {f}")
+        print(f"[TP {self.tp_rank}] {f}")
         
         
     def log_decode_stats(
@@ -339,7 +339,7 @@ class Scheduler:
         msg += (
             f"#queue-req: {len(self.waiting_queue)}, "
         )
-        logger.info(f"[TP {self.tp_rank}] {msg}")
+        print(f"[TP {self.tp_rank}] {msg}")
         
     def update_running_batch(self, batch: Batch) -> Batch:
         """Update the current running decoding batch."""
@@ -378,10 +378,10 @@ class Scheduler:
             
 
     def run_batch(self, batch: Batch) -> GenerationBatchResult:
-        if batch.mode.is_prefill():
-            print(f"[TP {self.tp_rank}] Running prefill batch")
-        else:
-            print(f"[TP {self.tp_rank}] Running decode batch")
+        # if batch.mode.is_prefill():
+        #     print(f"[TP {self.tp_rank}] Running prefill batch")
+        # else:
+        #     print(f"[TP {self.tp_rank}] Running decode batch")
         logits_output = self.model_runner.forward(batch)
         next_token_ids = self.model_runner.sample(logits_output, batch)
         batch.output_ids = next_token_ids

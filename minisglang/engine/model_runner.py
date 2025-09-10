@@ -202,12 +202,13 @@ class ModelRunner:
         if can_run_cuda_graph:
             return self.cuda_graph_runner.replay(batch)
 
+        batch.seq_lens_cpu = batch.seq_lens.cpu()
         self.attn_backend.init_forward_metadata(batch)
         batch.attn_backend = self.attn_backend
         
-        print(f"[TP {self.tp_rank}] Running batch: {batch.input_ids.shape=} {batch.positions.shape=}")
+        print(f"[TP {self.tp_rank}] Running batch: {batch.input_ids.shape=} {batch.positions.shape=} {batch.input_ids=} {batch.positions=}")
         logits_output = self.model.forward(batch.input_ids, batch.positions, batch)
-        print(f"[TP {self.tp_rank}] Model forward done. {logits_output.shape=}")
+        # print(f"[TP {self.tp_rank}] Model forward done. {logits_output.shape=}")
 
         # logits_output: shape = (bs, vocab_size)
         return logits_output
@@ -221,7 +222,7 @@ class ModelRunner:
         next_token_ids = self.sampler(
             logits=logits, sampling_info=batch.sampling_info
         )
-        print(f"sample. {next_token_ids.shape=}")
+        # print(f"sample. {next_token_ids.shape=}")
         return next_token_ids
             
     

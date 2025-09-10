@@ -3,6 +3,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 import logging
 from typing import Callable, TYPE_CHECKING, Tuple
+
+from regex import F
 if TYPE_CHECKING:
     from minisglang.engine.model_runner import ModelRunner
 
@@ -71,7 +73,7 @@ class CudaGraphRunner:
 
         # Batch sizes to capture
         self.capture_bs, self.compile_bs = get_batch_sizes_to_capture(model_runner)
-        logger.info(f"Capture cuda graph bs {self.capture_bs}")
+        print(f"Capture cuda graph bs {self.capture_bs}")
         self.capture_forward_mode = Mode.DECODE
         self.num_tokens_per_bs = 1
 
@@ -127,6 +129,7 @@ class CudaGraphRunner:
                 )
             
             graph, logits_output = self.capture_one_batch_size(bs)
+            torch.cuda.synchronize()
             self.graphs[bs] = graph
             self.output_buffers[bs] = logits_output
             
@@ -150,6 +153,7 @@ class CudaGraphRunner:
             kvcache=self.model_runner.kvcache,
             tree_cache=None
         )
+        batch.attn_backend = self.model_runner.attn_backend
         batch.mode = self.capture_forward_mode
         batch.input_ids = input_ids
         batch.page_table_ids = page_table_ids
@@ -169,7 +173,11 @@ class CudaGraphRunner:
         
         # Run and capture
         def run_once():
-            return self.model_runner.forward(batch)
+            return self.model_runner.model(
+                input_ids=input_ids,
+                positions=positions,
+                batch=batch,
+            )
         
         torch.cuda.synchronize()
         torch.distributed.barrier()
@@ -203,7 +211,6 @@ class CudaGraphRunner:
         self.out_cache_loc[:raw_num_token].copy_(batch.out_cache_loc)
         self.positions[:raw_num_token].copy_(batch.positions)
         
-        # TODO seq_lens_cpu ?
         if bs != raw_bs:
             self.seq_lens_cpu.fill_(1)
         self.seq_lens_cpu[:raw_bs].copy_(batch.seq_lens[:raw_bs].to("cpu"))
@@ -230,6 +237,7 @@ class CudaGraphRunner:
         self.replay_prepare(batch)
         
         # Replay
+        # print(f"Replaying cuda graph with {self.bs=}, {self.raw_bs=}, {self.raw_num_token=}, {self.input_ids=}, {self.positions=}")
         self.graphs[self.bs].replay()
 
         logits_output = self.output_buffers[self.bs]
